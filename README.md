@@ -1,147 +1,193 @@
-# Restaurant AI Agent
+# 🍽️ Restaurant AI Agent | AWS Hackathon 2026
 
-## What It Does
+A restaurant AI agent built with **Flask, Strands Decider 2B, Google Gemini, ChromaDB, and SQLAlchemy**. It handles customer inquiries about menus, ingredients, policies, and pickup branches using Retrieval-Augmented Generation (RAG), manages multi-turn ordering conversations, guides customers through upselling, and commits confirmed orders to a relational database.
 
-This project is a restaurant-facing AI agent built with Flask.
-It answers customer questions, recommends products, and performs real order operations using a relational database.
-Administrators can manage menu items, orders, customers, and the RAG knowledge base from a dashboard.
+An integrated admin dashboard allows restaurant staff to manage orders, customer profiles, menu items, conversations, and the RAG knowledge base.
 
-## Main Features
+## 🌟 Key Features
 
-- Customer service conversations
-- Product and menu questions
-- AI recommendations based on real product data
-- RAG knowledge base with Markdown sources
-- Order creation and tracking
-- Conversation context during a session
-- Admin dashboard
+- **Strands Decider 2B:** Local intent classification with PyTorch CPU inference, singleton engine reuse, and fallback routing.
+- **LangGraph Orchestration:** Routes requests through information retrieval or order-processing workflows.
+- **RAG Knowledge Base:** Grounded answers based on restaurant menus, branch directories, policies, and FAQs, with lexical fallback when embedding requests fail.
+- **Conversational Ordering:** Multi-turn cart management, guided upselling for combos and extras, fulfillment details, and explicit order confirmation.
+- **Authoritative Menu & Branch Directory:** Structured menu information and branch listings grouped by Cairo and Alexandria.
+- **Database Synchronization:** SQLite and SQLAlchemy manage customer profiles, orders, itemized totals, and persistent chat sessions.
+- **Order Tracking:** Database-backed order lookup using order codes such as `ORD-XXXXX`.
+- **Admin Dashboard:** Manage products, orders, customers, conversations, and knowledge records.
+- **Chat Management:** Create independent conversations and delete chats without deleting confirmed orders or customer records.
 
-## Architecture
+## 📐 System Architecture
 
-Customer
-→ Flask
-→ LangGraph
-→ RAG / Tools
-→ SQLAlchemy + SQLite
-→ Response
+```mermaid
+flowchart TD
+    User([Customer]) --> Flask[Flask Web App]
+    Flask --> Router[Strands Decider 2B]
+    Router -->|Information| RAG[RAG Node]
+    Router -->|Ordering| Order[Order Tools Node]
 
-## RAG
+    RAG --> Chroma[(ChromaDB)]
+    RAG --> Products[(SQLite Product Catalog)]
+    RAG --> LLM[Gemini Response Generation]
 
-- Knowledge is stored in Markdown files and `KnowledgeItem` records.
-- Documents are split into semantic chunks.
-- Embeddings are generated and stored in ChromaDB.
-- Retrieval is used when answering restaurant and product questions.
-- Admin can add, edit, and delete knowledge from the dashboard.
-- Changes are reindexed and immediately available to the agent.
+    Order --> Draft[(Chat Session and Draft State)]
+    Draft --> Validation{Order Confirmed?}
+    Validation -->|No| Collect[Collect Missing Details]
+    Collect --> Order
+    Validation -->|Yes| Commit[(Save Order and Customer)]
+    Commit --> LLM
 
-## LangGraph
-
-The agent uses a simplified 2-path LangGraph workflow:
-
-- **Router**: Classifies intent into information or ordering
-- **RAG (`rag_node`)**: Retrieves relevant menu and policy context from ChromaDB
-- **Order Tools (`order_tool_node`)**: Manages draft items, fulfillment details, and atomic database commits
-- **LLM (`llm_node`)**: Generates grounded, contextual responses using Gemini
-
-This keeps the flow explicit and prevents the model from acting without the right context.
-
-## Business Actions
-
-The agent can perform real database actions:
-
-- Create order
-- Track order
-
-Once placed, orders are final and cannot be modified or cancelled by customers.
-
-It uses the existing SQLAlchemy models and validation rules.
-The database is the source of truth.
-
-## Admin Dashboard
-
-Admin pages manage:
-
-- Products
-- Orders
-- Customers
-- Knowledge/RAG data
-
-## Project Structure
-
+    LLM --> Response([Customer Response])
 ```
+
+## 🛠️ Technology Stack
+
+| Component | Technology |
+|---|---|
+| Backend | Python, Flask |
+| Agent Workflow | LangGraph |
+| Intent Classification | Strands Decider 2B |
+| Language Model | Google Gemini |
+| Embeddings | `gemini-embedding-001` |
+| Vector Database | ChromaDB |
+| Relational Database | SQLite, SQLAlchemy |
+| Frontend | HTML, CSS, JavaScript, Jinja2 |
+| Testing | pytest |
+
+## 📂 Project Structure
+
+```text
 app/
-  models/
-  routes/
-  services/
-  templates/
+├── models/              # SQLAlchemy database models
+├── routes/              # Dashboard and API endpoints
+├── services/
+│   ├── agent.py         # Gemini integration and chat history
+│   ├── chunker.py       # Markdown parsing and chunking
+│   ├── decider.py       # LangGraph workflow and Decider routing
+│   ├── embeddings.py    # Google embedding client
+│   ├── knowledge_sync.py# Knowledge synchronization and indexing
+│   ├── order_session.py # Draft state and order detail extraction
+│   ├── tools.py         # Order and product database operations
+│   └── vector_store.py  # ChromaDB retrieval and lexical fallback
+└── templates/           # Dashboard and chat UI
 knowledge/
-config.py
-run.py
-requirements.txt
-README.md
+├── menu.md              # Authoritative menu and pricing
+└── details.md           # Branches, policies, hours, and FAQs
+tests/                   # Automated regression and functional tests
+config.py                # Application configuration
+db_explorer.py           # Database inspection utility
+requirements.txt         # Python dependencies
+run.py                   # Application entry point
+.env.example             # Environment template
+.gitignore               # Ignored files and secrets
 ```
 
-## Setup & Quickstart
+## 🚀 Setup & Quickstart
 
-1. **Install Dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. **Configure Environment:**
-   Copy `.env.example` to `.env`:
-   ```bash
-   cp .env.example .env
-   ```
-   Add your Google Gemini API key:
-   ```env
-   LLM_PROVIDER=gemini
-   GEMINI_API_KEY=your_gemini_api_key_here
-   GEMINI_MODEL=gemini-2.5-flash
-   GEMINI_EMBEDDING_MODEL=gemini-embedding-001
-   ```
-   *(Get your key from [Google AI Studio](https://aistudio.google.com/)).*
+### 1. Prerequisites
 
-3. **Rebuild ChromaDB Vectors with Gemini Embeddings:**
-   Once your `GEMINI_API_KEY` is added, rebuild your knowledge vector index:
-   - Either navigate to the Admin Dashboard at `http://127.0.0.1:5000/admin/knowledge` and click **"Rebuild Vectors"**,
-   - Or run in Python:
-     ```bash
-     python -c "from app import create_app; from app.services.knowledge_sync import rebuild_vector_index; app = create_app(); app.app_context().push(); print('Indexed chunks:', rebuild_vector_index())"
-     ```
+- Python 3.10–3.12
+- Git
+- A Google Gemini API key
 
-4. **Start the Application:**
-   ```bash
-   python run.py
-   ```
-   Open `http://127.0.0.1:5000` or admin dashboard at `http://127.0.0.1:5000/admin`.
+### 2. Clone and Install
 
-## Environment Variables
+```bash
+git clone https://github.com/<your-username>/<your-repo-name>.git
+cd <your-repo-name>
 
-| Variable | Description | Default / Example |
-| :--- | :--- | :--- |
-| `GEMINI_API_KEY` | Google Gemini API key | *(required for live Gemini)* |
-| `GEMINI_MODEL` | Selected Gemini generation model | `gemini-2.5-flash` |
-| `GEMINI_EMBEDDING_MODEL` | Official Gemini embedding model | `gemini-embedding-001` |
-| `DATABASE_URI` | SQLite database URI | `sqlite:///restaurant.db` |
-| `CHROMA_PERSIST_DIR` | Chroma vector database directory | `./data/chroma_db` |
-| `AGENT_TEMPERATURE` | Model generation temperature | `0.3` |
-| `AGENT_MAX_TOKENS` | Max response tokens | `512` |
+python -m venv venv
+```
 
-Never commit real secret values.
+Activate the virtual environment.
 
-## Model Selection & Discovery
+**Windows PowerShell**
+```powershell
+venv\Scripts\Activate.ps1
+```
 
-To change the active Gemini model, edit `GEMINI_MODEL` in your `.env` file without changing Python code:
-- `gemini-2.5-flash` (Recommended default: fast, highly capable, supports structured tool use)
-- `gemini-2.5-pro` (High-reasoning model for complex queries)
-- `gemini-2.0-flash` (Alternative fast flash model)
+**Linux / macOS**
+```bash
+source venv/bin/activate
+```
 
-For embeddings, `GEMINI_EMBEDDING_MODEL` defaults to `gemini-embedding-001`, Google's official stable embedding model.
+Install dependencies:
 
-## Troubleshooting Common API Errors
+```bash
+pip install -r requirements.txt
+```
 
-- **`Gemini API key is not configured`**: Add `GEMINI_API_KEY=your_key` to `.env`.
-- **`Invalid Gemini API key`**: Verify key validity on [Google AI Studio](https://aistudio.google.com/).
-- **`Configured Gemini model 'xyz' was not found`**: Verify model spelling in `GEMINI_MODEL`.
-- **`Sorry, the Gemini AI service is currently rate-limited`**: Wait a brief moment or upgrade quota tier.
-- **`Dimensional mismatch in ChromaDB`**: If switching embedding models, click **"Rebuild Vectors"** in the Admin Dashboard (`/admin/knowledge`) to recreate the collection with the new vector dimensions.
+### 3. Configure Environment Variables
+
+Copy `.env.example` to `.env`.
+
+**Windows PowerShell**
+```powershell
+Copy-Item .env.example .env
+```
+
+**Linux / macOS**
+```bash
+cp .env.example .env
+```
+
+Configure your API key and application settings:
+
+```env
+SECRET_KEY=replace-with-a-secure-secret
+PORT=5000
+
+DATABASE_URI=sqlite:///restaurant.db
+CHROMA_PERSIST_DIR=./data/chroma_db
+
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_EMBEDDING_MODEL=gemini-embedding-001
+
+DECIDER_ENABLED=True
+PRELOAD_DECIDER=True
+DECIDER_THREADS=0
+```
+
+Get your API key from [Google AI Studio](https://aistudio.google.com/).
+
+**Never commit your actual `.env` file or API credentials.**
+
+### 4. Start the Application
+
+```bash
+python run.py
+```
+
+At startup, the application initializes its database and loads the Strands Decider model when preloading is enabled. Menu synchronization depends on the application's configured initialization workflow.
+
+Open:
+
+- Application: `http://127.0.0.1:5000/`
+- Admin dashboard: `http://127.0.0.1:5000/admin/`
+- Knowledge management: `http://127.0.0.1:5000/admin/knowledge`
+
+### 5. Build the RAG Index
+
+After configuring the API key, open the knowledge management page and use **Rebuild Vectors** to index the knowledge base.
+
+If the embedding API quota is exhausted, lexical fallback may help retrieve existing knowledge without generating new query embeddings.
+
+## ⚙️ Configuration Reference
+
+| Variable | Description | Default |
+|---|---|---|
+| `GEMINI_API_KEY` | Google Gemini API key | Required for live Gemini requests |
+| `GEMINI_MODEL` | Text-generation model | `gemini-2.5-flash` |
+| `GEMINI_EMBEDDING_MODEL` | Embedding model | `gemini-embedding-001` |
+| `DECIDER_ENABLED` | Enables Strands Decider routing | `True` |
+| `PRELOAD_DECIDER` | Loads the model during startup | `True` |
+| `DECIDER_THREADS` | PyTorch CPU thread setting; `0` means automatic | `0` |
+| `DATABASE_URI` | SQLAlchemy database connection | `sqlite:///restaurant.db` |
+| `CHROMA_PERSIST_DIR` | Persistent vector-store directory | `./data/chroma_db` |
+
+## 🛡️ Security
+
+- Keep API keys and secrets out of version control.
+- Use a secure `SECRET_KEY` outside local development.
+- Protect admin routes and validate state-changing requests.
+- Back up persistent data before destructive database operations.
