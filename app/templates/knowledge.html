@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+
+{% block title %}RAG Knowledge Base - Restaurant Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="fw-bold mb-1"><i class="bi bi-database-gear text-danger me-2"></i>RAG Knowledge Base</h2>
+        <p class="text-muted mb-0">Semantic RAG chunks from Markdown sources stored in Chroma.</p>
+    </div>
+    <div class="d-flex gap-2">
+        <form method="POST" action="{{ url_for('admin.rebuild_vectors') }}" onsubmit="return confirm('Rebuild vector index with configured Gemini embedding model?');">
+            <button type="submit" class="btn btn-outline-danger">
+                <i class="bi bi-arrow-repeat me-1"></i>Rebuild Vectors
+            </button>
+        </form>
+        <form method="POST" action="{{ url_for('admin.sync_markdown') }}">
+            <button type="submit" class="btn btn-outline-primary">
+                <i class="bi bi-arrow-clockwise me-1"></i>Sync Markdown
+            </button>
+        </form>
+        <a href="{{ url_for('admin.create_knowledge_markdown') }}" class="btn btn-success">
+            <i class="bi bi-file-earmark-plus me-1"></i>Add Markdown
+        </a>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" action="{{ url_for('admin.knowledge') }}" class="row g-3">
+            <div class="col-md-4">
+                <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                    <input type="text" name="q" class="form-control" placeholder="Search chunk ID or name..." value="{{ search_query }}">
+                </div>
+            </div>
+            <div class="col-md-3">
+                <select name="type" class="form-select" onchange="this.form.submit()">
+                    <option value="">All Types</option>
+                    {% for t in types %}
+                        <option value="{{ t }}" {% if selected_type == t %}selected{% endif %}>{{ t }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-3">
+                <select name="category" class="form-select" onchange="this.form.submit()">
+                    <option value="">All Categories</option>
+                    {% for cat in categories %}
+                        <option value="{{ cat }}" {% if selected_category == cat %}selected{% endif %}>{{ cat }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2 d-flex gap-2">
+                <button type="submit" class="btn btn-primary"><i class="bi bi-filter me-1"></i>Filter</button>
+                <a href="{{ url_for('admin.knowledge') }}" class="btn btn-outline-secondary">Reset</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header bg-white py-3">
+        <h5 class="mb-0 fw-bold">Markdown Sources</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Source</th>
+                        <th>KnowledgeItem ID</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for source, item_id in knowledge_items_by_source.items() %}
+                    <tr>
+                        <td class="fw-bold">{{ source }}</td>
+                        <td class="text-muted">{{ item_id }}</td>
+                        <td class="text-end">
+                            <a href="{{ url_for('admin.knowledge_source_edit', source=source) }}" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-pencil-square"></i> Edit Markdown
+                            </a>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="3" class="text-center py-4 text-muted">No Markdown sources found.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header bg-white py-3">
+        <h5 class="mb-0 fw-bold">Chunks</h5>
+    </div>
+    <div class="card-body p-0">
+        <div class="alert alert-info m-3">
+            To change the knowledge base, edit the Markdown files above. Chunks are generated automatically from the Markdown sources.
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Chunk ID</th>
+                        <th>Type</th>
+                        <th>Name</th>
+                        <th>Markdown Source</th>
+                        <th>Vector</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for chunk in chunks %}
+                    <tr>
+                        <td><code>{{ chunk.id }}</code></td>
+                        <td><span class="badge bg-secondary">{{ chunk.type }}</span></td>
+                        <td class="fw-bold">{{ chunk.name }}</td>
+                        <td class="text-muted">{{ chunk.source }}</td>
+                        <td>
+                            {% if chunk.vector_status == 'Synced' %}
+                                <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Synced</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ chunk.vector_status }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end">
+                            <a href="{{ url_for('admin.knowledge_chunk_detail', chunk_id=chunk.id) }}" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-eye"></i> View
+                            </a>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="5" class="text-center py-4 text-muted">No semantic chunks found.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

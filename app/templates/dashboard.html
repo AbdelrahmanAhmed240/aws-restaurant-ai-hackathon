@@ -1,0 +1,597 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard Overview - Restaurant Admin{% endblock %}
+
+{% block extra_head %}
+<!-- Markdown Parser & DOMPurify for rich, secure agent responses -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.2/dist/purify.min.js"></script>
+<style>
+    .chat-markdown {
+        color: #212529;
+        font-size: 0.95rem;
+        line-height: 1.65;
+        word-break: break-word;
+        unicode-bidi: plaintext;
+        text-align: start;
+    }
+    .chat-markdown h3 {
+        font-size: 1.25rem;
+        font-weight: 700;
+        margin-top: 0.4rem;
+        margin-bottom: 0.75rem;
+        color: #111827;
+        border-bottom: 2px solid #ffc107;
+        padding-bottom: 0.35rem;
+    }
+    .chat-markdown h4 {
+        font-size: 1.02rem;
+        font-weight: 700;
+        margin-top: 1rem;
+        margin-bottom: 0.5rem;
+        color: #1f2937;
+        background-color: #f8f9fa;
+        border-left: 3px solid #ffc107;
+        padding: 0.3rem 0.65rem;
+        border-radius: 4px;
+        display: inline-block;
+    }
+    .chat-markdown p {
+        margin-top: 0.55rem;
+        margin-bottom: 0.35rem;
+    }
+    .chat-markdown p:first-child {
+        margin-top: 0;
+    }
+    .chat-markdown strong {
+        font-weight: 700;
+        color: #111827;
+    }
+    .chat-markdown ul, .chat-markdown ol {
+        margin-top: 0.25rem;
+        margin-bottom: 0.75rem;
+        padding-inline-start: 1.45rem;
+        list-style-type: disc;
+    }
+    .chat-markdown li {
+        margin-bottom: 0.28rem;
+        line-height: 1.55;
+    }
+    .chat-markdown blockquote {
+        border-left: 4px solid #ffc107;
+        background: #fff9e6;
+        padding: 0.5rem 0.85rem;
+        margin: 0.6rem 0;
+        border-radius: 4px;
+        font-size: 0.92rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-12">
+        <h2 class="fw-bold mb-1"><i class="bi bi-speedometer2 text-primary me-2"></i>Admin Dashboard</h2>
+        <p class="text-muted">Overview of restaurant operations, live orders, customers, and dynamic RAG knowledge base.</p>
+    </div>
+</div>
+
+<!-- Metric Stat Cards -->
+<div class="row g-3 mb-4">
+    <div class="col-md-4 col-lg-2">
+        <div class="card stat-card bg-white p-3 border-start border-primary border-4">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="text-muted small">Products</span>
+                    <h3 class="fw-bold my-1">{{ total_products }}</h3>
+                </div>
+                <div class="fs-1 text-primary"><i class="bi bi-egg-fried"></i></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 col-lg-2">
+        <div class="card stat-card bg-white p-3 border-start border-success border-4">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="text-muted small">Orders</span>
+                    <h3 class="fw-bold my-1">{{ total_orders }}</h3>
+                </div>
+                <div class="fs-1 text-success"><i class="bi bi-receipt"></i></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 col-lg-2">
+        <div class="card stat-card bg-white p-3 border-start border-info border-4">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="text-muted small">Customers</span>
+                    <h3 class="fw-bold my-1">{{ total_customers }}</h3>
+                </div>
+                <div class="fs-1 text-info"><i class="bi bi-people"></i></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 col-lg-3">
+        <div class="card stat-card bg-white p-3 border-start border-danger border-4">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="text-muted small">RAG Articles</span>
+                    <h3 class="fw-bold my-1">{{ total_knowledge }}</h3>
+                </div>
+                <div class="fs-1 text-danger"><i class="bi bi-database-gear"></i></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Orders Section -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0 fw-bold"><i class="bi bi-clock-history me-2 text-primary"></i>Recent Live Orders</h5>
+                <span class="badge bg-primary">Auto-Updated from DB</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Order Code</th>
+                                <th>Customer</th>
+                                <th>Phone</th>
+                                <th>Items</th>
+                                <th>Type & Destination</th>
+                                <th>Payment</th>
+                                <th>Total</th>
+                                <th>Status</th>
+                                <th>Created</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for order in recent_orders %}
+                            <tr>
+                                <td class="fw-bold text-primary">{{ order.order_code }}</td>
+                                <td>{{ order.customer.name }}</td>
+                                <td><code>{{ order.customer.phone }}</code></td>
+                                <td class="small">{{ order.items_summary() }}</td>
+                                <td>
+                                    {% if order.order_type == 'delivery' %}
+                                        <span class="badge bg-primary mb-1"><i class="bi bi-truck me-1"></i>Delivery</span>
+                                        <div class="small text-muted">{{ order.delivery_address or 'No address' }}</div>
+                                    {% elif order.order_type == 'pickup' %}
+                                        <span class="badge bg-dark mb-1"><i class="bi bi-shop me-1"></i>Pickup</span>
+                                        <div class="small text-muted">{{ order.pickup_branch or 'Main Branch' }}</div>
+                                    {% elif order.order_type == 'dine_in' %}
+                                        <span class="badge bg-success mb-1"><i class="bi bi-cup-hot me-1"></i>Dine-in</span>
+                                        <div class="small text-muted">Table {{ order.table_number or 'N/A' }}</div>
+                                    {% else %}
+                                        <span class="badge bg-secondary mb-1">{{ order.order_type }}</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <span class="badge bg-dark">{{ order.payment_method }}</span>
+                                </td>
+                                <td class="fw-bold text-success">{{ order.total_price }} EGP</td>
+                                <td>
+                                    {% if order.status == 'In Kitchen' %}
+                                        <span class="badge bg-warning text-dark"><i class="bi bi-fire me-1"></i>In Kitchen</span>
+                                    {% elif order.status == 'Delivered' %}
+                                        <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Delivered</span>
+                                    {% else %}
+                                        <span class="badge bg-danger">{{ order.status }}</span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-muted small">{{ order.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="9" class="text-center py-4 text-muted">No orders found. Run seed.py or place an order via the AI Agent.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Agent Multi-Chat Assistant -->
+<div class="row mt-4" id="chat">
+    <div class="col-12 col-xl-11 mx-auto">
+        <div class="card shadow-sm border-0">
+            <div class="card-header bg-white py-3 border-bottom d-flex justify-content-between align-items-center">
+                <div class="d-flex align-items-center gap-2">
+                    <h5 class="mb-0 fw-bold"><i class="bi bi-robot me-2 text-warning"></i>Restaurant AI Agent</h5>
+                    <span class="badge bg-warning text-dark"><i class="bi bi-circle-fill me-1 text-success small"></i>Live Assistant</span>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    <button type="button" class="btn btn-sm btn-outline-primary" id="btn-new-chat">
+                        <i class="bi bi-plus-lg me-1"></i>New Chat
+                    </button>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="row g-0" style="min-height: 480px;">
+                    <!-- Sessions Sidebar -->
+                    <div class="col-md-4 col-lg-3 border-end bg-light d-flex flex-column" style="max-height: 540px;">
+                        <div class="p-2 border-bottom bg-white d-flex justify-content-between align-items-center">
+                            <span class="small fw-bold text-muted text-uppercase">Conversations</span>
+                            <span class="badge bg-secondary rounded-pill" id="sessions-count">0</span>
+                        </div>
+                        <div class="list-group list-group-flush flex-grow-1 overflow-auto" id="sessions-list" style="max-height: 480px;">
+                            <!-- Session items loaded dynamically -->
+                        </div>
+                    </div>
+
+                    <!-- Chat Message Area -->
+                    <div class="col-md-8 col-lg-9 d-flex flex-column bg-white">
+                        <!-- Active Session Header -->
+                        <div class="p-3 border-bottom d-flex justify-content-between align-items-center bg-white">
+                            <span class="fw-bold fs-6" id="active-session-title">Chat 1</span>
+                            <span class="badge bg-light text-muted border" id="active-session-id-display"></span>
+                        </div>
+
+                        <!-- Messages Container -->
+                        <div id="agent-messages" class="p-3 flex-grow-1 overflow-auto" style="height: 380px; max-height: 380px; background: #fafafa;">
+                            <div class="text-muted small text-center my-4">Select a chat or start typing to ask about meals, orders, or locations.</div>
+                        </div>
+
+                        <!-- Chat Input Form -->
+                        <div class="p-3 border-top bg-white">
+                            <form id="agent-chat-form" class="d-flex gap-2">
+                                <input type="text" id="agent-message" class="form-control" placeholder="Ask about menu, order food, or track an order..." required autocomplete="off">
+                                <input type="hidden" id="agent-session-id" value="">
+                                <button type="submit" class="btn btn-warning fw-semibold px-4" id="agent-send-btn">Send</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+(function () {
+    // 1. Get HTML elements
+    const form = document.getElementById('agent-chat-form');
+    const input = document.getElementById('agent-message');
+    const sessionInput = document.getElementById('agent-session-id');
+    const messages = document.getElementById('agent-messages');
+    const sendBtn = document.getElementById('agent-send-btn');
+    const newChatBtn = document.getElementById('btn-new-chat');
+    const sessionsList = document.getElementById('sessions-list');
+    const sessionsCount = document.getElementById('sessions-count');
+    const activeTitle = document.getElementById('active-session-title');
+    const activeId = document.getElementById('active-session-id-display');
+
+    // 2. Remember the selected chat
+    let currentSessionId =
+        localStorage.getItem('rest_agent_current_session') || '';
+
+    let busy = false;
+
+    // 3. Send requests to Flask and read JSON responses
+    async function api(url, options = {}) {
+        const response = await fetch(url, options);
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || 'Request failed');
+        }
+
+        return data;
+    }
+
+    // 4. Display a message
+    function appendMessage(role, text, html) {
+        const wrapper = document.createElement('div');
+        wrapper.className = role === 'user'
+            ? 'mb-3 text-end'
+            : 'mb-3 text-start';
+
+        const label = document.createElement('div');
+        label.className = 'small fw-semibold mb-1';
+        label.textContent = role === 'user' ? 'You' : 'Agent';
+
+        const bubble = document.createElement('div');
+
+        if (role === 'user') {
+            bubble.className =
+                'p-2 px-3 rounded-4 bg-primary text-white d-inline-block text-start';
+            bubble.textContent = text;
+            bubble.style.whiteSpace = 'pre-wrap';
+            bubble.style.wordBreak = 'break-word';
+        } else {
+            bubble.className =
+                'p-3 rounded-3 bg-white border shadow-sm chat-markdown';
+
+            // Display safe HTML if the backend supplied it
+            if (html && window.DOMPurify) {
+                bubble.innerHTML = window.DOMPurify.sanitize(html);
+            } else if (window.marked && window.DOMPurify) {
+                bubble.innerHTML = window.DOMPurify.sanitize(
+                    window.marked.parse(text)
+                );
+            } else {
+                // Fallback: display plain text safely
+                bubble.textContent = text;
+                bubble.style.whiteSpace = 'pre-wrap';
+            }
+        }
+
+        wrapper.appendChild(label);
+        wrapper.appendChild(bubble);
+        messages.appendChild(wrapper);
+
+        messages.scrollTop = messages.scrollHeight;
+    }
+
+    // 5. Load messages from one chat
+    async function loadMessages(sessionId) {
+        if (!sessionId) return;
+
+        messages.textContent = 'Loading messages...';
+
+        try {
+            const data = await api(
+                '/agent/sessions/' +
+                encodeURIComponent(sessionId) +
+                '/messages'
+            );
+
+            messages.innerHTML = '';
+
+            if (!data.messages || data.messages.length === 0) {
+                messages.textContent = 'No messages yet. Start chatting!';
+                return;
+            }
+
+            data.messages.forEach(function (message) {
+                appendMessage(
+                    message.role,
+                    message.content,
+                    message.html
+                );
+            });
+        } catch (error) {
+            messages.textContent = 'Failed to load chat history.';
+        }
+    }
+
+    // 6. Select a chat
+    function selectSession(sessionId, title) {
+        currentSessionId = sessionId;
+        sessionInput.value = sessionId;
+
+        localStorage.setItem(
+            'rest_agent_current_session',
+            sessionId
+        );
+
+        if (activeTitle) activeTitle.textContent = title || 'Chat';
+        if (activeId) activeId.textContent = sessionId;
+
+        // Highlight the selected chat
+        document.querySelectorAll('.session-item').forEach(function (item) {
+            const selected = item.dataset.id === sessionId;
+
+            item.classList.toggle('active', selected);
+            item.classList.toggle('bg-warning', selected);
+            item.classList.toggle('text-dark', selected);
+            item.classList.toggle('fw-semibold', selected);
+            item.classList.toggle('bg-transparent', !selected);
+        });
+
+        loadMessages(sessionId);
+    }
+
+    // 7. Load all chats into the sidebar
+    async function loadSessions(keepActive = true) {
+        try {
+            const sessions = await api('/agent/sessions');
+
+            sessionsList.innerHTML = '';
+            if (sessionsCount) {
+                sessionsCount.textContent = sessions.length;
+            }
+
+            sessions.forEach(function (session) {
+                const item = document.createElement('div');
+
+                item.className =
+                    'list-group-item border-0 py-2 px-3 small ' +
+                    'd-flex justify-content-between align-items-center session-item';
+
+                item.dataset.id = session.session_id;
+                item.style.cursor = 'pointer';
+
+                // Create the title safely
+                const title = document.createElement('span');
+                title.className = 'text-truncate flex-grow-1 me-2';
+                title.textContent = session.title || 'Chat';
+
+                // Right side: count badge + delete button
+                const rightGroup = document.createElement('div');
+                rightGroup.className = 'd-flex align-items-center gap-1';
+
+                const count = document.createElement('span');
+                count.className = 'badge bg-secondary';
+                count.textContent = session.message_count || 0;
+
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.className = 'btn btn-link text-danger p-0 ms-1 btn-delete-chat';
+                delBtn.title = 'Delete Conversation';
+                delBtn.innerHTML = '<i class="bi bi-trash" style="font-size: 0.85rem;"></i>';
+
+                delBtn.addEventListener('click', async function (ev) {
+                    ev.stopPropagation(); // Do not trigger item click
+                    const confirmed = confirm('Are you sure you want to delete "' + (session.title || 'this chat') + '" permanently?');
+                    if (!confirmed) return;
+
+                    delBtn.disabled = true;
+                    try {
+                        await api('/agent/sessions/' + encodeURIComponent(session.session_id), {
+                            method: 'DELETE'
+                        });
+                        if (currentSessionId === session.session_id) {
+                            currentSessionId = '';
+                        }
+                        await loadSessions(true);
+                    } catch (err) {
+                        alert('Failed to delete chat: ' + err.message);
+                        delBtn.disabled = false;
+                    }
+                });
+
+                rightGroup.appendChild(count);
+                rightGroup.appendChild(delBtn);
+
+                // Select chat when clicked
+                item.addEventListener('click', function () {
+                    selectSession(session.session_id, session.title);
+                });
+
+                item.appendChild(title);
+                item.appendChild(rightGroup);
+                sessionsList.appendChild(item);
+            });
+
+            // Restore the previous chat if it still exists
+            const savedSession = sessions.find(function (session) {
+                return session.session_id === currentSessionId;
+            });
+
+            if (keepActive && savedSession) {
+                selectSession(
+                    savedSession.session_id,
+                    savedSession.title
+                );
+            } else if (sessions.length > 0) {
+                selectSession(
+                    sessions[0].session_id,
+                    sessions[0].title
+                );
+            } else {
+                currentSessionId = '';
+                sessionInput.value = '';
+                if (activeTitle) activeTitle.textContent = 'No chat selected';
+                if (activeId) activeId.textContent = '';
+                messages.textContent = 'Create a new chat to get started.';
+            }
+        } catch (error) {
+            console.error('Failed to load chats:', error);
+        }
+    }
+
+    // 8. Create a new chat
+    if (newChatBtn) {
+        newChatBtn.addEventListener('click', async function () {
+            newChatBtn.disabled = true;
+
+            try {
+                const session = await api('/agent/sessions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+
+                currentSessionId = session.session_id;
+                await loadSessions(true);
+            } catch (error) {
+                alert('Failed to create chat: ' + error.message);
+            } finally {
+                newChatBtn.disabled = false;
+            }
+        });
+    }
+
+    // 9. Send a message to the agent
+    form.addEventListener('submit', async function (event) {
+        event.preventDefault();
+
+        if (busy) return;
+
+        const message = input.value.trim();
+        const sessionId = sessionInput.value;
+
+        if (!message) return;
+
+        if (!sessionId) {
+            alert('Please create or select a chat first.');
+            return;
+        }
+
+        busy = true;
+        input.disabled = true;
+        sendBtn.disabled = true;
+        sendBtn.textContent = 'Sending...';
+
+        // Display the user's message immediately
+        appendMessage('user', message);
+        input.value = '';
+
+        // Cancel the request if it takes longer than two minutes
+        const controller = new AbortController();
+        const timeout = setTimeout(function () {
+            controller.abort();
+        }, 120000);
+
+        try {
+            const data = await api('/agent/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    message: message
+                }),
+                signal: controller.signal
+            });
+
+            if (data.error) {
+                appendMessage('agent', 'Error: ' + data.error);
+            } else if (data.message) {
+                appendMessage('agent', data.message, data.html);
+            } else {
+                appendMessage('agent', 'No response received.');
+            }
+
+            await loadSessions(true);
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                appendMessage('agent', 'Request timed out. Please try again.');
+            } else {
+                appendMessage('agent', 'Request failed: ' + error.message);
+            }
+        } finally {
+            clearTimeout(timeout);
+
+            busy = false;
+            input.disabled = false;
+            sendBtn.disabled = false;
+            sendBtn.textContent = 'Send';
+            input.focus();
+
+            messages.scrollTop = messages.scrollHeight;
+        }
+    });
+
+    // 10. Prevent Enter from submitting again while waiting
+    input.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter' && busy) {
+            event.preventDefault();
+        }
+    });
+
+    // 11. Start the chat interface
+    loadSessions(true);
+
+})();
+</script>
+{% endblock %}

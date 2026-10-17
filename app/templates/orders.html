@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+
+{% block title %}Orders Management - Restaurant Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="fw-bold mb-1"><i class="bi bi-receipt text-success me-2"></i>Orders Management</h2>
+        <p class="text-muted mb-0">Track delivery orders with destination addresses and pickup orders with selected branch.</p>
+    </div>
+</div>
+
+<!-- Order Filters -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" action="{{ url_for('admin.orders') }}" class="row g-3">
+            <div class="col-md-4">
+                <select name="type" class="form-select" onchange="this.form.submit()">
+                    <option value="">All Order Types</option>
+                    <option value="delivery" {% if selected_type|lower in ['delivery'] %}selected{% endif %}>🚀 Delivery Only (With Address)</option>
+                    <option value="pickup" {% if selected_type|lower in ['pickup'] %}selected{% endif %}>🏬 Pickup Only (From Branch)</option>
+                    <option value="dine_in" {% if selected_type|lower in ['dine_in', 'dine-in'] %}selected{% endif %}>🍽️ Dine-in Only (In Restaurant)</option>
+                </select>
+            </div>
+            <div class="col-md-4">
+                <select name="status" class="form-select" onchange="this.form.submit()">
+                    <option value="">All Statuses</option>
+                    <option value="In Kitchen" {% if selected_status == 'In Kitchen' %}selected{% endif %}>In Kitchen</option>
+                    <option value="Ready" {% if selected_status == 'Ready' %}selected{% endif %}>Ready</option>
+                    <option value="Delivered" {% if selected_status == 'Delivered' %}selected{% endif %}>Delivered</option>
+                    <option value="Cancelled" {% if selected_status == 'Cancelled' %}selected{% endif %}>Cancelled</option>
+                </select>
+            </div>
+            <div class="col-md-4 d-flex gap-2">
+                <a href="{{ url_for('admin.orders') }}" class="btn btn-outline-secondary"><i class="bi bi-arrow-clockwise me-1"></i>Reset Filters</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Orders Table -->
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Order Code</th>
+                        <th>Customer</th>
+                        <th>Phone</th>
+                        <th>Type & Destination</th>
+                        <th>Payment</th>
+                        <th>Items Summary</th>
+                        <th>Total</th>
+                        <th>Status</th>
+                        <th>Time</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for order in orders %}
+                    <tr>
+                        <td class="fw-bold text-primary"><code>{{ order.order_code }}</code></td>
+                        <td>{{ order.customer.name if order.customer else (order.customer_name or 'N/A') }}</td>
+                        <td><code>{{ order.customer.phone if order.customer else (order.customer_phone or 'N/A') }}</code></td>
+                        <td>
+                            {% if order.order_type == 'delivery' %}
+                                <span class="badge bg-primary mb-1"><i class="bi bi-truck me-1"></i>Delivery</span>
+                                <div class="small text-muted"><i class="bi bi-geo-alt-fill text-danger me-1"></i>{{ order.delivery_address or 'No address provided' }}</div>
+                            {% elif order.order_type == 'pickup' %}
+                                <span class="badge bg-dark mb-1"><i class="bi bi-shop me-1"></i>Pickup</span>
+                                <div class="small text-muted"><i class="bi bi-building text-primary me-1"></i>{{ order.pickup_branch or 'Main Branch' }}</div>
+                            {% elif order.order_type == 'dine_in' %}
+                                <span class="badge bg-success mb-1"><i class="bi bi-cup-hot me-1"></i>Dine-in</span>
+                                <div class="small text-muted"><i class="bi bi-hash text-muted me-1"></i>Table {{ order.table_number or 'N/A' }}</div>
+                            {% else %}
+                                <span class="badge bg-secondary mb-1">{{ order.order_type }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if order.payment_method == 'Cash' %}
+                                <span class="badge bg-secondary"><i class="bi bi-cash me-1"></i>Cash</span>
+                            {% else %}
+                                <span class="badge bg-info text-dark"><i class="bi bi-credit-card me-1"></i>Visa</span>
+                            {% endif %}
+                        </td>
+                        <td class="small">{{ order.items_summary() }}</td>
+                        <td class="fw-bold text-success">{{ order.total_price }} EGP</td>
+                        <td>
+                            {% if order.status == 'In Kitchen' %}
+                                <span class="badge bg-warning text-dark"><i class="bi bi-fire me-1"></i>In Kitchen</span>
+                            {% elif order.status == 'Ready' %}
+                                <span class="badge bg-info text-dark"><i class="bi bi-box-seam me-1"></i>Ready</span>
+                            {% elif order.status == 'Delivered' %}
+                                <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Delivered</span>
+                            {% else %}
+                                <span class="badge bg-danger">{{ order.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-muted small">{{ order.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                        <td class="text-end">
+                            <div class="btn-group btn-group-sm">
+                                <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#orderModal{{ order.id }}">
+                                    <i class="bi bi-pencil-square me-1"></i>Manage
+                                </button>
+                                <button type="button" class="btn btn-outline-danger" data-bs-toggle="modal" data-bs-target="#deleteOrderModal{{ order.id }}">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+
+                    <!-- Order Manage Modal -->
+                    <div class="modal fade" id="orderModal{{ order.id }}" tabindex="-1">
+                        <div class="modal-dialog modal-dialog-centered">
+                            <div class="modal-content">
+                                <div class="modal-header bg-light">
+                                    <h5 class="modal-title fw-bold">Order Management: {{ order.order_code }}</h5>
+                                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                </div>
+                                <div class="modal-body">
+                                    <div class="mb-3">
+                                        <p class="mb-1"><strong>Customer:</strong> {{ order.customer.name if order.customer else (order.customer_name or 'N/A') }} (<code>{{ order.customer.phone if order.customer else (order.customer_phone or 'N/A') }}</code>)</p>
+                                        <p class="mb-1"><strong>Type:</strong> {{ order.order_type }}</p>
+                                        {% if order.order_type == 'delivery' %}
+                                            <p class="mb-1"><strong>Address:</strong> {{ order.delivery_address }}</p>
+                                        {% elif order.order_type == 'pickup' %}
+                                            <p class="mb-1"><strong>Pickup Branch:</strong> {{ order.pickup_branch }}</p>
+                                        {% elif order.order_type == 'dine_in' %}
+                                            <p class="mb-1"><strong>Table Number:</strong> {{ order.table_number }}</p>
+                                        {% endif %}
+                                        <p class="mb-1"><strong>Payment:</strong> {{ order.payment_method }}</p>
+                                        <p class="mb-1"><strong>Current Status:</strong> <span class="badge bg-secondary">{{ order.status }}</span></p>
+                                    </div>
+                                    <h6 class="fw-bold border-bottom pb-2">Line Items</h6>
+                                    <ul class="list-group list-group-flush mb-3">
+                                        {% for item in order.items %}
+                                        <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                                            <div>
+                                                <div class="fw-semibold">{{ item.product_name }} x{{ item.quantity }}</div>
+                                                {% if item.notes %}
+                                                    <small class="text-muted">Notes: {{ item.notes }}</small>
+                                                {% endif %}
+                                            </div>
+                                            <span class="text-success fw-bold">{{ item.line_total }} EGP</span>
+                                        </li>
+                                        {% endfor %}
+                                    </ul>
+                                    <div class="d-flex justify-content-between fs-5 fw-bold border-top pt-2">
+                                        <span>Total Amount:</span>
+                                        <span class="text-success">{{ order.total_price }} EGP</span>
+                                    </div>
+                                    <div class="border-top pt-3 mt-3">
+                                        <form method="POST" action="{{ url_for('admin.update_order_status', order_id=order.id) }}" class="d-flex align-items-center gap-2">
+                                            <label class="form-label mb-0 small fw-bold">Update Status:</label>
+                                            <select name="status" class="form-select form-select-sm" style="width: auto;">
+                                                <option value="In Kitchen" {% if order.status == 'In Kitchen' %}selected{% endif %}>In Kitchen</option>
+                                                <option value="Ready" {% if order.status == 'Ready' %}selected{% endif %}>Ready</option>
+                                                <option value="Delivered" {% if order.status == 'Delivered' %}selected{% endif %}>Delivered</option>
+                                                <option value="Cancelled" {% if order.status == 'Cancelled' %}selected{% endif %}>Cancelled</option>
+                                            </select>
+                                            <button type="submit" class="btn btn-sm btn-primary">Save Status</button>
+                                        </form>
+                                    </div>
+                                </div>
+                                <div class="modal-footer">
+                                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Delete Order Confirmation Modal -->
+                    <div class="modal fade" id="deleteOrderModal{{ order.id }}" tabindex="-1">
+                        <div class="modal-dialog modal-dialog-centered">
+                            <div class="modal-content">
+                                <div class="modal-header bg-danger text-white">
+                                    <h5 class="modal-title fw-bold"><i class="bi bi-exclamation-triangle-fill me-2"></i>Confirm Order Deletion</h5>
+                                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                                </div>
+                                <div class="modal-body">
+                                    <p class="mb-2">Are you sure you want to permanently delete order <strong><code>{{ order.order_code }}</code></strong>?</p>
+                                    <div class="alert alert-warning mb-2 py-2 small">
+                                        <i class="bi bi-info-circle me-1"></i><strong>Warning:</strong> This action cannot be undone. Order items and line totals will be permanently deleted. Related customer records will remain intact.
+                                    </div>
+                                </div>
+                                <div class="modal-footer">
+                                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                                    <form method="POST" action="{{ url_for('admin.delete_order', order_id=order.id) }}" class="d-inline">
+                                        <button type="submit" class="btn btn-danger btn-sm">Yes, Delete Order</button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% else %}
+                    <tr>
+                        <td colspan="10" class="text-center py-4 text-muted">No orders found matching your filters.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

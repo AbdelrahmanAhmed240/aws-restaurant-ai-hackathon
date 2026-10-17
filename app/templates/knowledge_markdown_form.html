@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Add Markdown Source - Restaurant Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="fw-bold mb-1"><i class="bi bi-file-earmark-plus text-danger me-2"></i>Add Markdown Source</h2>
+        <p class="text-muted mb-0">Create a new Markdown file in the knowledge folder and index it into Chroma.</p>
+    </div>
+    <a href="{{ url_for('admin.knowledge') }}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-1"></i>Back to Knowledge Base
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form method="POST">
+            <div class="mb-3">
+                <label class="form-label">Markdown filename</label>
+                <input type="text" name="filename" class="form-control" value="{{ item.filename if item else '' }}" placeholder="example.md" required>
+                <div class="form-text">Must end with <code>.md</code>. It will be created inside <code>knowledge/</code>.</div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Title</label>
+                <input type="text" name="title" class="form-control" value="{{ item.title if item else '' }}" required>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Category</label>
+                <select name="category" class="form-select">
+                    {% for cat in categories %}
+                        <option value="{{ cat }}" {% if item and item.category == cat %}selected{% endif %}>{{ cat }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Content</label>
+                <textarea name="content" class="form-control" rows="12" required>{{ item.content if item else '' }}</textarea>
+                <div class="form-text">Use Markdown formatting.</div>
+            </div>
+            <button type="submit" class="btn btn-primary">Create Markdown Source</button>
+            <a href="{{ url_for('admin.knowledge') }}" class="btn btn-outline-secondary ms-2">Cancel</a>
+        </form>
+    </div>
+</div>
+{% endblock %}

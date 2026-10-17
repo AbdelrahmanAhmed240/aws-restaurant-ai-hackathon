@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block title %}{{ 'Edit Product' if product else 'New Product' }} - Restaurant Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="fw-bold mb-1"><i class="bi bi-egg-fried text-primary me-2"></i>{{ 'Edit Product' if product else 'New Product' }}</h2>
+        <p class="text-muted mb-0">{{ 'Update menu item details, price, and availability.' if product else 'Add a new item to the restaurant menu.' }}</p>
+    </div>
+    {% if product %}
+    <form method="POST" action="{{ url_for('admin.delete_product', product_id=product.id) }}" class="d-inline" onsubmit="return confirm('Delete this product permanently? This cannot be undone.');">
+        <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</button>
+    </form>
+    {% endif %}
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('admin.new_product' if not product else 'admin.edit_product', product_id=product.id if product else None) }}">
+            <div class="mb-3">
+                <label for="name" class="form-label fw-semibold">Product Name <span class="text-danger">*</span></label>
+                <input type="text" name="name" id="name" class="form-control" placeholder="e.g. Shack burger" value="{{ product.name if product else '' }}" required>
+            </div>
+
+            <div class="mb-3">
+                <label for="category" class="form-label fw-semibold">Category <span class="text-danger">*</span></label>
+                <select name="category" id="category" class="form-select" required>
+                    <option value="">-- Select Category --</option>
+                    <option value="Meals" {{ (product.category if product else '') == 'Meals' and 'selected' }}>Meals</option>
+                    <option value="Sandwiches" {{ (product.category if product else '') == 'Sandwiches' and 'selected' }}>Sandwiches</option>
+                    <option value="Combos" {{ (product.category if product else '') == 'Combos' and 'selected' }}>Combos</option>
+                    <option value="Add-ons" {{ (product.category if product else '') == 'Add-ons' and 'selected' }}>Add-ons</option>
+                    <option value="Drinks" {{ (product.category if product else '') == 'Drinks' and 'selected' }}>Drinks</option>
+                    <option value="Sides" {{ (product.category if product else '') == 'Sides' and 'selected' }}>Sides</option>
+                </select>
+            </div>
+
+            <div class="mb-3">
+                <label for="description" class="form-label fw-semibold">Description</label>
+                <textarea name="description" id="description" class="form-control" rows="2" placeholder="Short description of the product...">{{ product.description if product else '' }}</textarea>
+            </div>
+
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label for="price" class="form-label fw-semibold">Base Price (EGP) <span class="text-danger">*</span></label>
+                    <input type="number" name="price" id="price" class="form-control" step="0.01" min="0" placeholder="0.00" value="{{ product.price if product else '' }}" required>
+                </div>
+                <div class="col-md-6">
+                    <label for="combo_price" class="form-label fw-semibold">Combo Add-on (EGP)</label>
+                    <input type="number" name="combo_price" id="combo_price" class="form-control" step="0.01" min="0" placeholder="0.00 (e.g. 30 for fries+drink upgrade)" value="{{ product.combo_price if product else '' }}">
+                    <div class="form-text">Optional. Adds this amount when customer upgrades to a combo.</div>
+                </div>
+            </div>
+
+            <div class="mb-3 mt-3">
+                <label class="form-label fw-semibold">Availability</label>
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="radio" name="is_available" id="avail_yes" value="True" {{ (product.is_available if product else True) and 'checked' }}>
+                    <label class="form-check-label" for="avail_yes">In Stock</label>
+                </div>
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="radio" name="is_available" id="avail_no" value="False" {{ (not (product.is_available if product else True)) and 'checked' }}>
+                    <label class="form-check-label" for="avail_no">Out of Stock</label>
+                </div>
+            </div>
+
+            <div class="d-grid gap-2 d-md-inline-block mt-4">
+                <button type="submit" class="btn btn-primary btn-lg"><i class="bi bi-check-lg me-1"></i>{{ 'Update Product' if product else 'Add Product' }}</button>
+                <a href="{{ url_for('admin.products') }}" class="btn btn-outline-secondary btn-lg">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
