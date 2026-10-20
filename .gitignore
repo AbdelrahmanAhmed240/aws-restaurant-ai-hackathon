@@ -42,11 +42,13 @@ venv.bak/
 
 # ChromaDB (regenerated from knowledge/*.md)
 data/chroma_db/
+data/
 
 # SQLite database (instance directory)
 instance/
 restaurant.db
 *.db
+*.sqlite3
 
 # OS
 .DS_Store
@@ -61,3 +63,5 @@ temp/
 tmp/
 *.tmp
 .pytest_cache/
+.coverage
+htmlcov/

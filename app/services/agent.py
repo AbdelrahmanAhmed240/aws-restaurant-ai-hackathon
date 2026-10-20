@@ -1,10 +1,15 @@
 from config import config
+import logging
 import re
+from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 _gemini_client = None
+_quota_exhausted = False
 
 def get_gemini_client():
-    """Lazily initialize Google Gen AI SDK client.
+    """Lazily initialize Google Gen AI SDK client with single attempt and fail-fast timeout.
     Does not crash on import or when GEMINI_API_KEY is not yet configured.
     """
     global _gemini_client
@@ -13,8 +18,23 @@ def get_gemini_client():
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY is missing. Please set it in your .env file.")
         from google import genai
-        _gemini_client = genai.Client(api_key=api_key)
+        from google.genai import types
+        try:
+            http_options = types.HttpOptions(
+                timeout=10000,
+                retry_options=types.HttpRetryOptions(attempts=1),
+            )
+            _gemini_client = genai.Client(api_key=api_key, http_options=http_options)
+        except Exception:
+            _gemini_client = genai.Client(api_key=api_key)
     return _gemini_client
+
+def set_gemini_client(client: Any = None):
+    """Set or override Gemini client (useful for mock testing)."""
+    global _gemini_client, _quota_exhausted
+    _gemini_client = client
+    if client is not None:
+        _quota_exhausted = False
 
 # In-memory conversation state keyed by session ID.
 _conversations: dict[str, list] = {}
@@ -33,7 +53,7 @@ def get_history(session_id: str) -> list:
                     .all()
                 )
                 if messages:
-                    # If the latest record is an unreplied user message (created right before graph_run),
+                    # If the latest record is an unreplied user message (created right before run),
                     # omit it so the restored history contains only completed past turns and avoids prompt duplication
                     if messages[-1].role == "user":
                         messages = messages[:-1]
@@ -89,14 +109,14 @@ _SYSTEM_PROMPT = (
     "* Includes: Half broasted chicken, fries, bread, garlic dip, coleslaw.\n"
     "* Combo upgrade: +50 EGP for fries and a drink.\n\n"
     "#### ➕ Add-ons\n\n"
-    "* **Basmati Rice** — 35 EGP\n"
-    "* **French Fries** — 30 EGP\n\n"
+    "**Basmati Rice** — 35 EGP\n"
+    "**French Fries** — 30 EGP\n\n"
     "#### 🥫 Sauces\n\n"
-    "* **Garlic Dip** — 15 EGP\n"
-    "* **BBQ Sauce** — 15 EGP\n\n"
+    "**Garlic Dip** — 15 EGP\n"
+    "**BBQ Sauce** — 15 EGP\n\n"
     "#### 🥤 Drinks\n\n"
-    "* **Soft Drink** — 20 EGP\n"
-    "* **Mineral Water** — 10 EGP\n\n"
+    "**Soft Drink** — 20 EGP\n"
+    "**Mineral Water** — 10 EGP\n\n"
     "### Example 2 — Guided Upselling\n"
     "User: \"I want 1 Break Meal.\"\n"
     "Assistant:\n"
@@ -143,9 +163,7 @@ def get_system_prompt(context: str = "") -> str:
 
 def _strip_reasoning(text: str) -> str:
     """Remove reasoning text and clean up the final response."""
-
     default = "I'm here to help with your restaurant questions."
-
     if not text or not text.strip():
         return default
 
@@ -184,12 +202,12 @@ def _strip_reasoning(text: str) -> str:
 
     return text.strip() or default
 
-def _reply_gemini(session_id: str, user_message: str, system_prompt: str, history: list) -> str:
-    """Generate a response using Gemini."""
+def _reply_gemini(session_id: str, user_message: str, system_prompt: str, history: list, context: str = "") -> str:
+    """Generate a response using Google Gemini."""
+    global _quota_exhausted
     from app.services.tools import query_price_info
 
     # Only run price-query shortcut if message is not an explicit order command
-    # and context is not an active ordering workflow prompt
     order_action_verbs = ("order", "place an order", "i want to order", "اطلب", "عايز اطلب", "عاوز اطلب", "ضيف")
     is_order_command = any(v in user_message.lower() for v in order_action_verbs)
     has_order_context = "Current Order Draft" in system_prompt or "Next required information" in system_prompt
@@ -201,13 +219,39 @@ def _reply_gemini(session_id: str, user_message: str, system_prompt: str, histor
             history.append({"role": "user", "content": user_message})
             history.append({"role": "assistant", "content": answer})
             return answer
-    
+
     api_key = getattr(config, "GEMINI_API_KEY", "")
     model_name = getattr(config, "GEMINI_MODEL", "gemini-2.5-flash")
     token_limit = max(getattr(config, "AGENT_MAX_TOKENS", 2048) or 2048, 2048)
 
-    if not api_key:
-        return "Gemini API key is not configured."
+    # If client has been injected via set_gemini_client, use it even if api_key is blank (test mocks)
+    global _gemini_client
+    injected_client = _gemini_client
+
+    if not api_key and injected_client is None:
+        if context and context.strip():
+            fallback_text = context.strip()
+        else:
+            fallback_text = (
+                "Welcome to our restaurant! How can I help you today? "
+                "You can ask to view our menu, get meal recommendations, or start a delivery or pickup order."
+            )
+        history.append({"role": "user", "content": user_message})
+        history.append({"role": "assistant", "content": fallback_text})
+        return fallback_text
+
+    # If quota was already exhausted in this session, return grounded context or graceful fallback immediately
+    if _quota_exhausted and injected_client is None:
+        if context and context.strip():
+            fallback_text = context.strip()
+        else:
+            fallback_text = (
+                "Sorry, our AI service is currently experiencing high demand. "
+                "Please try again in a moment, or call 16099 to place your order directly."
+            )
+        history.append({"role": "user", "content": user_message})
+        history.append({"role": "assistant", "content": fallback_text})
+        return fallback_text
 
     try:
         from google import genai
@@ -215,7 +259,7 @@ def _reply_gemini(session_id: str, user_message: str, system_prompt: str, histor
     except ImportError:
         return "Please install google-genai: pip install google-genai"
 
-    # Convert conversation history into Gemini's format
+    # Convert conversation history into Gemini format
     contents = []
     for msg in history[-20:]:
         if msg.get("content"):
@@ -240,64 +284,24 @@ def _reply_gemini(session_id: str, user_message: str, system_prompt: str, histor
         system_instruction=system_prompt,
         temperature=config.AGENT_TEMPERATURE,
         max_output_tokens=token_limit,
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
 
-    # Prioritize primary model and verified active models available to the API
-    models = list(dict.fromkeys([
-        model_name,
-        "gemini-flash-latest",
-        "gemini-flash-lite-latest",
-        "gemini-3-flash-preview",
-        "gemini-3.1-flash-lite-preview",
-        "gemini-2.5-flash",
-    ]))
-
-    client = get_gemini_client()
+    client = injected_client if injected_client is not None else get_gemini_client()
     response_text = ""
     last_error = None
 
-    for model in models:
-        try:
-            response = client.models.generate_content(
-                model=model,
-                contents=contents,
-                config=gen_config,
-            )
-
-            response_text = response.text or ""
-            if response_text:
-                break
-
-        except errors.APIError as exc:
-            last_error = exc
-            code = getattr(exc, "code", None)
-
-            # If 400 is due to thinking_config not supported by this model, retry without it
-            if code == 400 and getattr(gen_config, "thinking_config", None) is not None:
-                try:
-                    fallback_config = types.GenerateContentConfig(
-                        system_instruction=system_prompt,
-                        temperature=config.AGENT_TEMPERATURE,
-                        max_output_tokens=token_limit,
-                    )
-                    response = client.models.generate_content(
-                        model=model,
-                        contents=contents,
-                        config=fallback_config,
-                    )
-                    response_text = response.text or ""
-                    if response_text:
-                        break
-                except Exception as inner_exc:
-                    last_error = inner_exc
-
-            # For model unavailability, rate limits, or server errors (503), continue to next verified model
-            continue
-
-        except Exception as exc:
-            last_error = exc
-            continue
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=gen_config,
+        )
+        response_text = response.text or ""
+    except Exception as exc:
+        last_error = exc
+        err_str = str(exc).lower()
+        if "quota" in err_str or "429" in err_str or "resource_exhausted" in err_str:
+            _quota_exhausted = True
 
     # Handle unsuccessful requests gracefully without exposing raw API errors
     if not response_text:
@@ -312,6 +316,8 @@ def _reply_gemini(session_id: str, user_message: str, system_prompt: str, histor
                 "Sorry, our AI service is temporarily unavailable right now. "
                 "Please try again in a moment, or call 16099 for assistance."
             )
+        elif context and context.strip():
+            response_text = context.strip()
         else:
             response_text = (
                 "Sorry, I'm having trouble responding right now. "
@@ -325,6 +331,7 @@ def _reply_gemini(session_id: str, user_message: str, system_prompt: str, histor
     return _strip_reasoning(response_text)
 
 def reply(session_id: str, user_message: str, context: str = "") -> str:
+    """Generate conversational response powered by Google Gemini generative capabilities."""
     history = get_history(session_id)
     system_prompt = get_system_prompt(context)
-    return _reply_gemini(session_id, user_message, system_prompt, history)
+    return _reply_gemini(session_id, user_message, system_prompt, history, context=context)

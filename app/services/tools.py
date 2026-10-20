@@ -1,3 +1,4 @@
+from typing import Optional, Any
 from app.models.base import db
 from app.models.product import Product
 from app.models.customer import Customer
@@ -342,47 +343,130 @@ def search_products(query: str, limit: int = 10) -> dict:
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
+def _extract_budget_amount(text: str) -> Optional[float]:
+    """Extract numeric budget threshold from English or Arabic phrasing."""
+    if not text:
+        return None
+    t = text.lower()
+    # Matches "under 100", "less than 50", "budget 150 egp", "تحت 100", "اقل من 50", "ميزانية 100"
+    m = re.search(
+        r"(?:under|less\s+than|below|up\s+to|budget|max|within|around|أقل\s+من|اقل\s+من|تحت|في\s+حدود|ميزانية|ميزانيه|بحد\s+أقصى|بحد\s+اقصى)\s*(\d{2,5})",
+        t
+    )
+    if m:
+        return float(m.group(1))
+
+    # Matches "100 egp", "50 le", "150 pounds", "50 جنيه"
+    m2 = re.search(r"(\d{2,5})\s*(?:egp|le|l\.e|pounds|جنيه|جنية)\b", t)
+    if m2:
+        return float(m2.group(1))
+
+    # Matches standalone "b 50" or "for 50"
+    m3 = re.search(r"\b(?:for|ب)\s+(\d{2,5})\b", t)
+    if m3:
+        return float(m3.group(1))
+
+    return None
+
 @_with_app_context
 def recommend_products(message: str, limit: int = 3) -> dict:
-    """Recommend available products based on the user's message."""
+    """
+    Recommend available products based on budget and user intent.
+    Strictly enforces budget boundaries programmatically:
+    - Never returns qualifying items whose price exceeds the budget.
+    - Distinguishes meal-specific requests from individual sides/drinks/sauces.
+    - Calculates optional combo upgrades accurately.
+    """
     try:
-        query = Product.query.filter(
-            Product.is_available.is_(True)
-        )
-
         text = (message or "").lower()
+        budget = _extract_budget_amount(text)
 
-        # Extract budget, e.g. "150 egp"
-        import re
-        match = re.search(r"(\d{2,5})\s*egp", text)
-        budget = float(match.group(1)) if match else None
+        meal_keywords = ["meal", "meals", "sandwich", "sandwiches", "dinner", "lunch", "food", "وجبة", "وجبات", "اكل", "أكل", "ساندوتش", "ساندوتشات"]
+        is_meal_inquiry = any(kw in text for kw in meal_keywords) or "meal" in text or "وجب" in text
 
-        products = query.all()
+        all_available_query = Product.query.filter(Product.is_available.is_(True))
 
         if budget is not None:
-            products = [p for p in products if p.price <= budget]
+            if is_meal_inquiry:
+                # User asked specifically for a meal under a budget
+                meal_products = all_available_query.filter(Product.category == "Meals").order_by(Product.price.asc()).all()
+                qualifying = [m for m in meal_products if m.price <= budget]
+                cheapest_meal = meal_products[0] if meal_products else None
 
-        # Prioritize meals
-        products.sort(
-            key=lambda p: (
-                (p.category or "").lower() != "meals",
-                p.price,
-            )
-        )
+                items = [
+                    {
+                        "id": p.id,
+                        "name": p.name,
+                        "category": p.category,
+                        "price": p.price,
+                        "combo_price": p.combo_price,
+                        "is_available": p.is_available,
+                        "description": p.description,
+                    }
+                    for p in qualifying[:limit]
+                ]
 
-        items = [
-            {
-                "id": p.id,
-                "name": p.name,
-                "category": p.category,
-                "price": p.price,
-                "combo_price": p.combo_price,
-                "is_available": p.is_available,
-                "description": p.description,
-            }
-            for p in products[:limit]
-        ]
+                result_text = ""
+                if not items and cheapest_meal:
+                    result_text = (
+                        f"There are no meals available at or below {budget:.0f} EGP.\n\n"
+                        f"Our most affordable meal is the **{cheapest_meal.name}** at **{cheapest_meal.price:.0f} EGP** "
+                        f"(Optional Combo upgrade: +{cheapest_meal.combo_price:.0f} EGP, Total: {cheapest_meal.price + cheapest_meal.combo_price:.0f} EGP)."
+                    )
+                    if budget <= 50:
+                        result_text += "\n\nIf you are looking for individual sides or drinks under 50 EGP, we offer French Fries (35 EGP), Extra Strip (35 EGP), and Soft Drinks (25 EGP)."
 
+                return {
+                    "ok": True,
+                    "budget": budget,
+                    "is_meal_inquiry": True,
+                    "items": items,
+                    "count": len(items),
+                    "text": result_text,
+                    "cheapest_meal": cheapest_meal.to_dict() if cheapest_meal else None,
+                }
+            else:
+                # All-item budget inquiry (e.g. anything under 50 EGP)
+                products = all_available_query.all()
+                qualifying = [p for p in products if p.price <= budget]
+                # Prioritize meals if any fit, else sort by price ascending
+                qualifying.sort(key=lambda p: ((p.category or "").lower() != "meals", p.price))
+
+                items = [
+                    {
+                        "id": p.id,
+                        "name": p.name,
+                        "category": p.category,
+                        "price": p.price,
+                        "combo_price": p.combo_price,
+                        "is_available": p.is_available,
+                        "description": p.description,
+                    }
+                    for p in qualifying[:limit]
+                ]
+
+                return {
+                    "ok": True,
+                    "budget": budget,
+                    "is_meal_inquiry": False,
+                    "items": items,
+                    "count": len(items),
+                }
+
+        # No budget specified: general recommendation
+        query = all_available_query
+        # Check for spicy request
+        if any(w in text for w in ["spicy", "حار", "سبايسي"]):
+            spicy_items = query.filter(
+                (Product.name.ilike("%strip%")) | (Product.name.ilike("%fatta%")) | (Product.description.ilike("%spicy%"))
+            ).all()
+            if spicy_items:
+                items = [p.to_dict() for p in spicy_items[:limit]]
+                return {"ok": True, "items": items, "count": len(items), "preference": "spicy"}
+
+        # General recommendation: prioritize popular meals
+        meals = query.filter(Product.category == "Meals").order_by(Product.price.asc()).all()
+        items = [p.to_dict() for p in meals[:limit]]
         return {"ok": True, "items": items, "count": len(items)}
 
     except Exception as exc:
@@ -390,38 +474,40 @@ def recommend_products(message: str, limit: int = 3) -> dict:
 
 @_with_app_context
 def query_price_info(message: str) -> dict:
-    """Answer basic meal price questions."""
+    """
+    Answer menu pricing and budget inquiries with authoritative pricing data.
+    Enforces exact budget limits and combo price additions.
+    """
     try:
         text = (message or "").lower()
 
         meals = Product.query.filter(
             Product.is_available.is_(True),
             Product.category == "Meals",
-        ).order_by(Product.price).all()
+        ).order_by(Product.price.asc()).all()
 
         if not meals:
             return {"ok": False, "error": "No available meals found."}
 
-        import re
+        budget = _extract_budget_amount(text)
+        results = []
+        title = "Meal Prices"
 
-        match = re.search(
-            r"(?:under|less than|أقل من|تحت)\s*(\d{2,5})", text
-        )
-
-        if match:
-            budget = float(match.group(1))
+        if budget is not None:
             results = [m for m in meals if m.price <= budget]
             title = f"Meals Under {budget:.0f} EGP"
 
-        elif any(word in text for word in ["cheapest", "أرخص", "ارخص"]):
-            results = [m for m in meals if m.price == meals[0].price]
+        elif any(word in text for word in ["cheapest", "lowest", "أرخص", "ارخص"]):
+            cheapest_price = meals[0].price
+            results = [m for m in meals if m.price == cheapest_price]
             title = "Cheapest Meals"
 
         elif any(word in text for word in ["most expensive", "highest", "أغلى", "اغلى"]):
-            results = [m for m in meals if m.price == meals[-1].price]
+            highest_price = meals[-1].price
+            results = [m for m in meals if m.price == highest_price]
             title = "Most Expensive Meals"
 
-        elif any(word in text for word in ["price of each", "all meal prices", "سعر كل", "أسعار الوجبات"]):
+        elif any(word in text for word in ["price of each", "all meal prices", "all prices", "سعر كل", "أسعار الوجبات"]):
             results = meals
             title = "All Meal Prices"
 
@@ -431,19 +517,29 @@ def query_price_info(message: str) -> dict:
         lines = [f"### {title}\n"]
 
         if not results:
-            lines.append("No meals match your budget.")
+            if budget is not None:
+                cheapest_meal = meals[0]
+                lines.append(f"There are no meals available under {budget:.0f} EGP.")
+                lines.append(
+                    f"Our most affordable meal is the **{cheapest_meal.name}** at **{cheapest_meal.price:.0f} EGP** "
+                    f"(Optional Combo upgrade: +{cheapest_meal.combo_price:.0f} EGP, Total: {cheapest_meal.price + cheapest_meal.combo_price:.0f} EGP)."
+                )
+                if budget <= 50:
+                    lines.append("\nFor options under 50 EGP, you can choose from our individual sides and drinks (e.g. French Fries 35 EGP, Extra Chicken Strip 35 EGP, Soft Drink 25 EGP).")
+            else:
+                lines.append("No meals match your criteria.")
         else:
             for m in results:
-                lines.append(
-                    f"* **{m.name}** — {m.price:.0f} EGP "
-                    f"(Combo: +{m.combo_price:.0f} EGP)"
-                )
+                combo_part = f" (Combo: +{m.combo_price:.0f} EGP)" if m.combo_price else ""
+                lines.append(f"* **{m.name}** — {m.price:.0f} EGP{combo_part}")
 
         return {
             "ok": True,
             "type": "price_query",
+            "budget": budget,
             "text": "\n".join(lines),
             "items": [m.to_dict() for m in results],
+            "count": len(results),
         }
 
     except Exception as exc:

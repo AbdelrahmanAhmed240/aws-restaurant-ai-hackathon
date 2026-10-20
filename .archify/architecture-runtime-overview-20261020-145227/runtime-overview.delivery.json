@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "776a8a6f-6d19-4b58-a0da-4a67c10a091d",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\Users\\Home\\Desktop\\BODAA\\All data\\Projects\\aws-restaurant-ai-hackathon\\.archify\\architecture-runtime-overview-20261020-145227\\candidate.json",
+  "output": "C:\\Users\\Home\\Desktop\\BODAA\\All data\\Projects\\aws-restaurant-ai-hackathon\\.archify\\architecture-runtime-overview-20261020-145227\\runtime-overview.html",
+  "specification": {
+    "sha256": "87d4d5796fa7afa697811d3a9a6d54c45db4c6cff9495b4a6eac245387123f63",
+    "bytes": 11694
+  },
+  "artifact": {
+    "sha256": "5e6a60c570cc46077181a6d93c0f5ae2a52c1fefee0a6d1148d2069ada8a9066",
+    "bytes": 841412
+  }
+}

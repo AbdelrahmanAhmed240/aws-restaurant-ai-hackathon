@@ -21,6 +21,13 @@ from app.models.order import Order
 from app.models.chat import ChatSession
 from app.models.base import db
 from app.services.tools import create_order, find_or_create_customer, _with_app_context
+from app.services.entity_recognition import (
+    resolve_branch,
+    resolve_fulfillment_type,
+    resolve_payment_method,
+    validate_and_extract_phone,
+    CANONICAL_BRANCHES,
+)
 
 # Known branches from knowledge/details.md (authoritative English names)
 AVAILABLE_BRANCHES = [
@@ -157,6 +164,9 @@ def get_draft(session_id: str) -> dict[str, Any]:
                 "upsell_offered": False,     # whether extras have been suggested
                 "upsell_declined": False,    # whether customer declined extras
                 "confirmed_order_code": None, # Set only once successfully committed
+                "awaiting_branch_clarification": None,
+                "branch_clarification_prompt": None,
+                "invalid_phone_attempt": False,
             }
     return _drafts[session_id]
 
@@ -317,37 +327,40 @@ def parse_user_entities(session_id: str, message: str) -> dict[str, Any]:
             changes["combo_upgraded"] = True
 
     # 1. Order type extraction: safely handles negation and word boundaries
-    detected_type = _detect_fulfillment_type(text)
+    detected_type = resolve_fulfillment_type(text) or _detect_fulfillment_type(text)
     if detected_type:
-        update_draft(session_id, order_type=detected_type)
+        update_draft(session_id, save_db=False, order_type=detected_type)
         changes["order_type"] = detected_type
 
     # 2. Payment method: distinguishes Cash, Visa, and mobile wallet methods with negation safety
-    detected_payment = _detect_payment_method(text)
+    detected_payment = resolve_payment_method(text) or _detect_payment_method(text)
     if detected_payment:
-        update_draft(session_id, payment_method=detected_payment)
+        update_draft(session_id, save_db=False, payment_method=detected_payment)
         changes["payment_method"] = detected_payment
 
     # 3. Phone number: matches Egyptian mobile format (010, 011, 012, 015 followed by 8 digits) with optional +20 country prefix
-    phone_match = re.search(r"(?:(?:\+?20)|0)?1[0125]\d{8}\b", text)
-    if phone_match:
-        phone_val = phone_match.group(0).strip()
-        update_draft(session_id, customer_phone=phone_val)
+    phone_val, is_invalid_phone = validate_and_extract_phone(text)
+    if phone_val:
+        update_draft(session_id, save_db=False, customer_phone=phone_val)
+        draft["invalid_phone_attempt"] = False
         changes["customer_phone"] = phone_val
+    elif is_invalid_phone and not draft.get("customer_phone"):
+        draft["invalid_phone_attempt"] = True
+        changes["invalid_phone_attempt"] = True
 
     # 4. Table number: extracts table ID for dine-in orders while guarding against phone or price numbers
     table_match = re.search(r"(?:table|ترابيزة|طاولة|طاوله)\s*(?:رقم|number|#)?\s*(\d+|[a-zA-Z]\d*)", text, re.IGNORECASE)
     if not table_match and (draft.get("order_type") == "dine_in" or detected_type == "dine_in"):
         # Standalone short answer like "12", "T12", "A5" when system specifically asked for table number
         m_standalone = re.fullmatch(r"\s*(?:#|no\.?|رقم)?\s*(\d+|[a-zA-Z]\d+)\s*", text, re.IGNORECASE)
-        if m_standalone and not phone_match:
+        if m_standalone and not phone_val:
             tbl_candidate = m_standalone.group(1).strip()
             # Guard against mistaking long numeric inputs (e.g. phone numbers or money amounts) for table IDs
             if len(tbl_candidate) <= 4:
                 table_match = m_standalone
     if table_match:
         tbl = table_match.group(1).strip()
-        update_draft(session_id, table_number=tbl)
+        update_draft(session_id, save_db=False, table_number=tbl)
         changes["table_number"] = tbl
 
     # 5. Branch selection: validates pickup requests against known restaurant locations
@@ -355,15 +368,17 @@ def parse_user_entities(session_id: str, message: str) -> dict[str, Any]:
     inquiry_markers = ("?", "؟", "what", "which", "where", "how", "list", "show", "can i", "do you", "أين", "فين", "ما هي", "ايه هي", "إيه هي", "كام")
     is_branch_question = any(q in text_lower for q in inquiry_markers) and any(b_kw in text_lower for b_kw in ("branch", "branches", "pickup", "فرع", "فروع", "استلام"))
     if not is_branch_question:
-        matched_branch = None
-        # Sort aliases by descending length so more specific phrases match first
-        for alias, canonical_branch in sorted(BRANCH_ALIASES.items(), key=lambda x: len(x[0]), reverse=True):
-            if re.search(rf"\b{re.escape(alias)}\b", text_lower) if alias.isascii() else alias in text_lower:
-                matched_branch = canonical_branch
-                break
-        if matched_branch:
-            update_draft(session_id, pickup_branch=matched_branch)
+        branch_res = resolve_branch(text, context=draft)
+        if branch_res.get("matched"):
+            matched_branch = branch_res["matched"]
+            update_draft(session_id, save_db=False, pickup_branch=matched_branch)
+            draft["awaiting_branch_clarification"] = None
+            draft["branch_clarification_prompt"] = None
             changes["pickup_branch"] = matched_branch
+        elif branch_res.get("is_ambiguous"):
+            draft["awaiting_branch_clarification"] = branch_res.get("ambiguity_type", "smouha")
+            draft["branch_clarification_prompt"] = branch_res.get("clarification_prompt")
+            changes["awaiting_branch_clarification"] = True
 
     # Helper: Check segmented compound messages (e.g., "عبدالرحمن احمد - وابورالمياة شارع فتح الله - كاش")
     # Allows customers to provide full details in a single delimited message
@@ -378,7 +393,7 @@ def parse_user_entities(session_id: str, message: str) -> dict[str, Any]:
             if re.search(r"(?:(?:\+?20)|0)?1[0125]\d{8}\b", seg):
                 continue
             if "شارع" in seg or "street" in seg_lower or "st." in seg_lower or "وابور" in seg:
-                update_draft(session_id, delivery_address=seg)
+                update_draft(session_id, save_db=False, delivery_address=seg)
                 changes["delivery_address"] = seg
             order_intent_words = [
                 "order", "want", "add", "have", "أطلب", "اطلب", "عاوز", "عايز", "أريد", "اريد", "هاتلي", "طلب",
@@ -387,7 +402,7 @@ def parse_user_entities(session_id: str, message: str) -> dict[str, Any]:
             ]
             seg_has_order = any(w in seg_lower for w in order_intent_words)
             if not seg_has_order and not draft.get("customer_name") and 1 <= len(seg.split()) <= 4 and not any(ch.isdigit() for ch in seg):
-                update_draft(session_id, customer_name=seg)
+                update_draft(session_id, save_db=False, customer_name=seg)
                 changes["customer_name"] = seg
 
     # Refresh draft after segment extraction
@@ -404,26 +419,27 @@ def parse_user_entities(session_id: str, message: str) -> dict[str, Any]:
         "basmatio", "basmetio", "cheddar", "cheder", "strips", "broasted", "break", "fatta", "fries", "rice", "coleslaw", "pepsi", "drink", "water",
         "بسمتيو", "شيدر", "بريك", "ستربس", "فتة", "بطاطس", "أرز", "رز", "ثومية", "كول سلو", "باربكيو", "رانش", "سويت تشيلي", "مشروب", "بيبسي", "مياه", "وجبة"
     ]
+    text_no_phone = re.sub(r"(?:(?:\+?20)|0)?1[0125]\d{8}\b", "", text).strip(" ,.-–—|")
     if not draft.get("customer_name"):
         # Matches "my name is X", "i'm X", "اسمي X", "أنا X"
-        name_match = re.search(r"(?:my name is\s+|my name\s*:\s*|name\s*:\s*|i am\s+|i\'m\s+|اسمي\s+|أنا\s+|انا\s+)([\w\s]{2,25})", text, re.IGNORECASE)
+        name_match = re.search(r"(?:my name is\s+|my name\s*:\s*|name\s*:\s*|i am\s+|i\'m\s+|اسمي\s+|أنا\s+|انا\s+)([\w\s]{2,25})", text_no_phone, re.IGNORECASE)
         if name_match:
             cand_name = name_match.group(1).split(",")[0].strip()
             cand_name = re.split(r"(?:\band\b|\bو\b|phone|رقم|cash|visa|كاش|فيزا|address|عنوان|street|شارع)", cand_name, flags=re.IGNORECASE)[0].strip()
             # Filter out common stop words and order phrases
             cand_lower = cand_name.lower()
             if len(cand_name) >= 2 and not any(w in cand_lower for w in order_stop_words) and not any(m in cand_lower for m in common_menu_names):
-                update_draft(session_id, customer_name=cand_name)
+                update_draft(session_id, save_db=False, customer_name=cand_name)
                 changes["customer_name"] = cand_name
         elif not draft.get("customer_name") and (draft.get("order_type") or draft.get("items")):
-            # Standalone name answer (e.g. user replies "Abdelrahman" or "كريم")
-            words = text.split()
-            if 1 <= len(words) <= 3 and len(text) >= 2 and not phone_match and not any(ch.isdigit() for ch in text):
-                if not any(w in text_lower for w in order_stop_words) and not any(m in text_lower for m in common_menu_names) and _detect_fulfillment_type(text) is None:
+            # Standalone name answer or name entered alongside phone number
+            words = text_no_phone.split()
+            if 1 <= len(words) <= 3 and len(text_no_phone) >= 2 and not any(ch.isdigit() for ch in text_no_phone):
+                if not any(w in text_no_phone.lower() for w in order_stop_words) and not any(m in text_no_phone.lower() for m in common_menu_names) and _detect_fulfillment_type(text_no_phone) is None:
                     # Guard against single-word commands or punctuation
-                    if re.match(r"^[\w\s\.\-']+$", text, re.UNICODE):
-                        update_draft(session_id, customer_name=text)
-                        changes["customer_name"] = text
+                    if re.match(r"^[\w\s\.\-']+$", text_no_phone, re.UNICODE):
+                        update_draft(session_id, save_db=False, customer_name=text_no_phone)
+                        changes["customer_name"] = text_no_phone
 
     # 7. Delivery address (especially if order_type is delivery or message mentions address / street)
     if not draft.get("delivery_address"):
@@ -435,18 +451,18 @@ def parse_user_entities(session_id: str, message: str) -> dict[str, Any]:
             # Clean trailing stop words like 'my name is...', 'phone...', 'cash'
             cand_addr = re.split(r"(?:,\s*)?(?:my name|phone|name:|اسمي|رقم|cash|visa|كاش|فيزا)", cand_addr, flags=re.IGNORECASE)[0].strip(" ,.-")
             if len(cand_addr) >= 3:
-                update_draft(session_id, delivery_address=cand_addr)
+                update_draft(session_id, save_db=False, delivery_address=cand_addr)
                 changes["delivery_address"] = cand_addr
                 # Auto-infer order_type as delivery if not yet set
                 if not draft.get("order_type"):
-                    update_draft(session_id, order_type="delivery")
+                    update_draft(session_id, save_db=False, order_type="delivery")
                     changes["order_type"] = "delivery"
         elif draft.get("order_type") == "delivery" and not draft.get("delivery_address") and not changes.get("customer_name"):
             # If user is directly answering the address question with a standalone address
             if _detect_fulfillment_type(text) is None and not any(k in text_lower for k in ["order", "menu", "cash", "visa", "confirm", "recommend", "delivery", "delievery", "pickup", "dine", "no thanks", "لا شكرا"]):
                 if not any(m in text_lower for m in common_menu_names) and not any(w in text_lower for w in order_stop_words):
-                    if len(text) >= 3 and any(ch.isalpha() for ch in text) and not phone_match:
-                        update_draft(session_id, delivery_address=text)
+                    if len(text) >= 3 and any(ch.isalpha() for ch in text) and not phone_val:
+                        update_draft(session_id, save_db=False, delivery_address=text)
                         changes["delivery_address"] = text
 
     # 8. Product and item additions
@@ -741,7 +757,7 @@ def format_draft_summary(draft: dict[str, Any]) -> str:
     lines.append(f"\n**Total Amount**: {calc['total_price']:.0f} EGP")
     return "\n".join(lines)
 
-def update_draft(session_id: str, **kwargs) -> dict[str, Any]:
+def update_draft(session_id: str, save_db: bool = True, **kwargs) -> dict[str, Any]:
     """Update draft fields and return the updated draft."""
     draft = get_draft(session_id)
     old_type = draft.get("order_type")
@@ -761,12 +777,13 @@ def update_draft(session_id: str, **kwargs) -> dict[str, Any]:
             draft["pickup_branch"] = None
 
     for key, val in kwargs.items():
-        if key == "order_type":
+        if key in ("order_type", "save_db"):
             continue
         if val is not None:
             draft[key] = val
 
-    _save_draft_to_db(session_id, draft)
+    if save_db:
+        _save_draft_to_db(session_id, draft)
     return draft
 
 @_with_app_context

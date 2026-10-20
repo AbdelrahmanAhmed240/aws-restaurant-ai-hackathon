@@ -2,7 +2,6 @@ from typing import Any, TypedDict
 import logging
 import os
 import re
-from langgraph.graph import END, StateGraph
 from app.services.agent import get_history
 from app.services.vector_store import retrieve
 from app.services.tools import (
@@ -23,6 +22,13 @@ from app.services.order_session import (
     get_upsell_suggestions,
     AVAILABLE_BRANCHES,
 )
+from app.services.decision_pattern import (
+    tool_selection_dispatcher,
+    intervention_handler,
+    ToolDecision,
+    ToolActionName,
+    TOOL_ACTIONS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +39,7 @@ class AgentState(TypedDict, total=False):
     is_fallback: bool
     route_confidence: float
     route_probabilities: dict[str, float]
+    tool_decision: dict
     history: list[dict[str, Any]]
     response: str
     context: str
@@ -272,8 +279,19 @@ def _fallback_route_intent(message: str, session_id: str = "") -> str:
     ]
     # An inquiry query must either have an explicit question structure + topic, or contain an explicit query phrase
     is_explicit_info_query = (
-        is_question_structure and (any(sig in text for sig in info_topic_signals) or "?" in text or "؟" in text)
-    ) or any(re.search(rf"\b(?:what\s+are|where\s+are|show|list)\s+.*(?:branches|locations|menu|hours)\b", text) for _ in [1])
+        is_question_structure and any(sig in text for sig in info_topic_signals)
+    ) or any(re.search(rf"\b(?:what\s+are|where\s+are|show|list)\s+.*(?:branches|locations|hours)\b", text) for _ in [1])
+
+    # Pricing, recommendation, or product lookup signals route to TOOLS per decider criteria
+    pricing_recommendation_signals = [
+        "price", "prices", "cost", "cheapest", "most expensive", "how much", "under", "egp", "le",
+        "recommend", "recommendation", "suggest", "suggestion",
+        "سعر", "اسعار", "أسعار", "تكلفة", "ارخص", "أرخص", "اغلى", "أغلى", "بكام", "رشح", "اقتراح"
+    ]
+    has_pricing_or_recommendation = any(
+        re.search(rf"\b{re.escape(s)}\b", text) if s.isascii() else s in text
+        for s in pricing_recommendation_signals
+    )
 
     # Explicit ordering verbs (actual intent to buy or add items to an order)
     order_action_verbs = [
@@ -301,11 +319,11 @@ def _fallback_route_intent(message: str, session_id: str = "") -> str:
     has_menu_item = any(item in text for item in menu_item_signals)
     has_phone = bool(re.search(r"(?:(?:\+?20)|0)?1[0125]\d{8}\b", text))
 
-    # If it's an explicit info inquiry without explicit ordering verbs/phone, route to RAG
-    if is_explicit_info_query and not has_order_action and not has_phone:
+    # If it's an explicit info inquiry without explicit ordering verbs/phone/pricing, route to RAG
+    if is_explicit_info_query and not has_order_action and not has_phone and not has_pricing_or_recommendation:
         return "RAG"
 
-    if has_order_action or has_phone or has_fulfillment_detail or has_menu_item:
+    if has_pricing_or_recommendation or has_order_action or has_phone or has_fulfillment_detail or has_menu_item:
         return "TOOLS"
 
     if has_active_draft:
@@ -390,8 +408,31 @@ def decide_route(message: str, session_id: str = "", force_fallback: bool = Fals
         "probabilities": {fallback_route: 1.0, ("TOOLS" if fallback_route == "RAG" else "RAG"): 0.0},
     }
 
+def decide_tool(message: str, session_id: str = "", force_fallback: bool = False) -> ToolDecision:
+    """Dynamic Strands Decider 2B Tool Selection.
+    Tags: #strands-decider-2b #tool-selection
+    Dynamically classifies message into one of 5 discrete tool actions:
+    - MENU_QUERY: Full menu browsing and exploration
+    - PRICE_BUDGET_INQUIRY: Price queries, cheap meals, budget recommendations (<=100 and <=50 EGP)
+    - ORDER_CART_OPS: Adding items to cart, combo upgrades, fulfillment collection, confirmation
+    - ORDER_TRACKING: Tracking existing orders via order code (e.g. ORD-12345)
+    - KNOWLEDGE_FAQ: Branch locations, opening hours, delivery areas, policies
+    """
+    engine = get_decider_engine() if not (force_fallback or _decider_disabled) else None
+    draft = get_draft(session_id) if session_id else {}
+    context_state = {"draft": draft, "stage": draft.get("stage", "idle")}
+    return intervention_handler.handle_turn(
+        session_id=session_id,
+        message=message,
+        engine=engine,
+        context_state=context_state,
+        force_fallback=force_fallback or _decider_disabled,
+    )
+
 def router_node(state: AgentState) -> AgentState:
-    """Classifies message into 'RAG' or 'TOOLS' using Strands Decider 2B."""
+    """Classifies message into 'RAG' or 'TOOLS' using Strands Decider 2B.
+    #strands-decider-2b #tool-selection
+    """
     session_id = state.get("session_id", "default")
     message = state.get("message", "")
     dec_result = decide_route(message, session_id=session_id)
@@ -640,9 +681,14 @@ def order_tool_node(state: AgentState) -> AgentState:
     message = state.get("message", "")
     text_lower = (message or "").strip().lower()
 
+    # Dynamic Strands Decider 2B #tool-selection
+    tool_dec = decide_tool(message, session_id=session_id)
+    state["tool_decision"] = tool_dec
+    selected_tool = tool_dec.get("tool", "")
+
     # Intercept explicit full-menu requests if routed to TOOLS (e.g. from general 'what do you have')
     # but only if user isn't trying to place an explicit order or modify items
-    is_menu_query = bool(re.search(
+    is_menu_query = (selected_tool == "MENU_QUERY") or bool(re.search(
         r"\b(?:menu|can\s+i\s+see\s+(?:the\s+)?menu|show\s+(?:me\s+)?(?:the\s+)?menu|what\s+do\s+you\s+have|display\s+(?:the\s+)?(?:full\s+)?menu|full\s+menu|view\s+(?:the\s+)?menu|what\'?s\s+on\s+the\s+menu)\b",
         text_lower
     )) or any(kw in text_lower for kw in ("منيو", "قائمة الطعام", "قائمه الطعام", "قائمة", "قائمه", "وريني المنيو", "عايز اشوف المنيو", "عاوز اشوف المنيو"))
@@ -665,6 +711,27 @@ def order_tool_node(state: AgentState) -> AgentState:
         state["tool_name"] = "menu_listing"
         state["tool_result"] = {"ok": True, "count": len(items)}
         return state
+
+    # Intercept price queries and route through query_price_info
+    price_info = query_price_info(message)
+    if price_info.get("ok"):
+        state["response"] = price_info.get("text", "")
+        state["context"] = price_info.get("text", "")
+        state["tool_name"] = "query_price_info"
+        state["tool_result"] = price_info
+        return state
+
+    # Intercept pure recommendations if user isn't placing an explicit order
+    rec_signals = ["recommend", "suggest", "best", "hungry", "what should i get", "spicy", "ترشيح", "رشحلي", "اقتراح"]
+    if any(sig in text_lower for sig in rec_signals) and not is_explicit_order_action:
+        rec_result = recommend_products(message, limit=3)
+        if rec_result.get("ok") and rec_result.get("items"):
+            lines = ["### 🌟 Recommended Options\n"] + _format_product_item_lines(rec_result["items"])
+            rec_text = "\n".join(lines).strip()
+            state["context"] = rec_text
+            state["tool_name"] = "recommend_products"
+            state["tool_result"] = rec_result
+            return state
 
     # 1. Parse entities into draft
     parse_user_entities(session_id, message)
@@ -848,13 +915,34 @@ def order_tool_node(state: AgentState) -> AgentState:
             state["context"] = state["response"]
         return state
 
+    # Check for branch clarification
+    if draft.get("awaiting_branch_clarification") and draft.get("branch_clarification_prompt"):
+        state["tool_name"] = "branch_clarification"
+        state["tool_result"] = {"ok": True, "clarification": "branch"}
+        state["response"] = draft["branch_clarification_prompt"]
+        state["context"] = state["response"]
+        return state
+
+    # Check for invalid phone number attempt
+    if draft.get("invalid_phone_attempt"):
+        state["tool_name"] = "phone_validation"
+        state["tool_result"] = {"ok": False, "error": "invalid_phone"}
+        state["response"] = "⚠️ Please provide a valid 11-digit Egyptian mobile number (e.g. `010XXXXXXXX`, `011XXXXXXXX`, `012XXXXXXXX`, or `015XXXXXXXX`)."
+        state["context"] = state["response"]
+        return state
+
     # 5. Ongoing Draft Flow: Item Selection, Guided Upselling, & Details Collection
     calc = calculate_draft_totals(draft)
-    context_lines.append(format_draft_summary(draft))
+    summary_text = format_draft_summary(draft)
 
     if not draft.get("items"):
         draft["stage"] = "selecting_items"
-        context_lines.append("\nCustomer has not added any items yet. Ask what meal they would like to order.")
+        state["tool_name"] = "order_draft"
+        state["tool_result"] = {"ok": True, "stage": "selecting_items"}
+        state["response"] = "What meal would you like to order today? You can view our menu or tell me what you're craving!"
+        state["context"] = state["response"]
+        return state
+
     elif not draft.get("upsell_offered") and not draft.get("upsell_declined"):
         suggestions = get_upsell_suggestions(draft)
         if suggestions.get("needs_upsell"):
@@ -869,15 +957,16 @@ def order_tool_node(state: AgentState) -> AgentState:
             if suggestions.get("suggest_sauce"):
                 offer_parts.append("Sauces (Garlic dip 15 EGP, BBQ 25 EGP, Ranch 15 EGP, Sweet Chili 15 EGP, Cheddar 35 EGP)")
 
-            context_lines.append(
-                f"\n💡 Guided Upselling Stage:\n"
-                f"Present the current draft order to the customer. Then ask if they would like to add any extras before proceeding:\n"
-                f"- " + "\n- ".join(offer_parts) + "\n"
-                f"(If they say 'no' or decline, we will proceed directly to fulfillment details. Do NOT pressure the customer)."
+            upsell_msg = (
+                f"{summary_text}\n\n"
+                f"💡 **Would you like to add any extras before proceeding?**\n- "
+                + "\n- ".join(offer_parts)
+                + "\n\n*(Reply **'no'** or **'no thanks'** to proceed directly to checkout)*"
             )
             state["tool_name"] = "order_upsell"
             state["tool_result"] = {"ok": True, "draft": draft, "calc": calc, "stage": "offering_extras"}
-            state["context"] = "\n\n".join(context_lines)
+            state["response"] = upsell_msg
+            state["context"] = upsell_msg
             return state
         else:
             draft["stage"] = "collecting_details"
@@ -886,37 +975,84 @@ def order_tool_node(state: AgentState) -> AgentState:
     missing = get_missing_fields(draft)
     if missing:
         draft["stage"] = "collecting_details"
-        field_names = {
-            "order_type": "Order Type (Delivery, Pickup from branch, or Dine-in)",
-            "customer_name": "Customer Name",
-            "customer_phone": "Phone Number",
-            "delivery_address": "Full Delivery Address (Area, Street, Building, Apartment)",
-            "pickup_branch": f"Pickup Branch (e.g., Mohandessin, Mokattam, Sheraton, Glim, Mandara, Smouha)",
-            "table_number": "Table Number",
-            "payment_method": "Payment Method (Cash or Visa)",
-        }
         first_missing = missing[0]
-        context_lines.append(f"\nNext required information to ask for: {field_names.get(first_missing, first_missing)}. Ask for this field clearly.")
-    else:
-        draft["stage"] = "awaiting_confirmation"
-        context_lines.append(
-            "\nAll required order details are complete! Present the final order summary with itemized prices, "
-            "combo upgrades, destination, payment method, and final total in EGP. "
-            "Ask the customer to explicitly confirm their order ('confirm' / 'yes').\n"
-            "CRITICAL: Do NOT state that the order has been placed or invent an order code yet. "
-            "The order is NOT confirmed until the customer replies to confirm."
-        )
 
-    state["tool_name"] = "order_draft"
-    state["tool_result"] = {
-        "ok": True,
-        "draft": draft,
-        "calc": calc,
-        "stage": draft.get("stage"),
-        "missing_fields": missing,
-    }
-    state["context"] = "\n\n".join(context_lines)
-    return state
+        prompts = {
+            "order_type": "Would you like your order for **Delivery**, **Pickup from branch**, or **Dine-in**?",
+            "customer_name": "Could you please provide your **name**?",
+            "customer_phone": "Could you please provide your **phone number**?",
+            "delivery_address": "Please provide your full **delivery address** (Area, Street, Building, and Apartment).",
+            "pickup_branch": (
+                "Which branch would you like to pick up your order from?\n\n"
+                "Available branches:\n"
+                "• Mohandessin (Giza)\n"
+                "• Mokattam (Cairo)\n"
+                "• Sheraton (Heliopolis)\n"
+                "• Glim (Alexandria)\n"
+                "• Mandara (Alexandria)\n"
+                "• Camp Caesar (Alexandria)\n"
+                "• Smouha Branch 1 (Hatem Mosque / Victor Emmanuel)\n"
+                "• Smouha Branch 2 (Commercial Market)\n"
+                "• Bahary (Alexandria)\n"
+                "• Sidi Bishr (Alexandria)\n"
+                "• Mahrousa (Alexandria)"
+            ),
+            "table_number": "Please provide your **table number**.",
+            "payment_method": "What payment method would you prefer (**Cash** or **Visa**)?"
+        }
+
+        if "customer_name" in missing and "customer_phone" in missing:
+            field_prompt = "Could you please provide your **name** and **phone number**?"
+        else:
+            field_prompt = prompts.get(first_missing, f"Please provide your **{first_missing.replace('_', ' ')}**.")
+
+        # If user also asked an informational question alongside order, let LLM synthesize
+        if has_mixed_info and hits:
+            context_lines = [summary_text, f"\nNext required information to ask for: {field_prompt}"]
+            state["tool_name"] = "order_draft"
+            state["tool_result"] = {"ok": True, "draft": draft, "calc": calc, "stage": "collecting_details", "missing_fields": missing}
+            state["context"] = "\n\n".join(context_lines)
+            return state
+
+        resp_text = f"{summary_text}\n\n{field_prompt}"
+        state["tool_name"] = "order_draft"
+        state["tool_result"] = {
+            "ok": True,
+            "draft": draft,
+            "calc": calc,
+            "stage": draft.get("stage"),
+            "missing_fields": missing,
+        }
+        state["response"] = resp_text
+        state["context"] = resp_text
+        return state
+
+    else:
+        # All required details complete! Awaiting explicit confirmation.
+        draft["stage"] = "awaiting_confirmation"
+        if has_mixed_info and hits:
+            context_lines = [summary_text, "\nAll required order details are complete! Ask customer to confirm."]
+            state["tool_name"] = "order_draft"
+            state["tool_result"] = {"ok": True, "draft": draft, "calc": calc, "stage": "awaiting_confirmation", "missing_fields": []}
+            state["context"] = "\n\n".join(context_lines)
+            return state
+
+        conf_prompt = (
+            f"{summary_text}\n\n"
+            f"✅ **All order details are complete!**\n"
+            f"Please reply **confirm** (or **yes**) to place your order!"
+        )
+        state["tool_name"] = "order_draft"
+        state["tool_result"] = {
+            "ok": True,
+            "draft": draft,
+            "calc": calc,
+            "stage": "awaiting_confirmation",
+            "missing_fields": [],
+        }
+        state["response"] = conf_prompt
+        state["context"] = conf_prompt
+        return state
 
 def llm_node(state: AgentState) -> AgentState:
     """Invokes Google Gemini with the grounded context prepared by RAG or order tools."""
@@ -955,36 +1091,66 @@ def llm_node(state: AgentState) -> AgentState:
     state["history"] = get_history(session_id)
     return state
 
-def build_graph():
-    graph = StateGraph(AgentState)
-
-    graph.add_node("router", router_node)
-    graph.add_node("rag", rag_node)
-    graph.add_node("order", order_tool_node)
-    graph.add_node("llm", llm_node)
-
-    graph.set_entry_point("router")
-
-    graph.add_conditional_edges(
-        "router",
-        lambda state: state["intent"],
-        {
-            "RAG": "rag",
-            "TOOLS": "order",
-        },
-    )
-
-    graph.add_edge("rag", "llm")
-    graph.add_edge("order", "llm")
-    graph.add_edge("llm", END)
-
-    return graph.compile()
-
-_graph = build_graph()
-
 def run(session_id: str, message: str) -> dict:
-    """Main workflow entry point for user message execution."""
-    return _graph.invoke({
+    """Main workflow entry point for user message execution using clean Python control flow.
+    Replaces graph orchestration with direct, traceable Python execution:
+    1. Strands Decider 2B (or observable fallback) classifies intent into RAG or TOOLS.
+    2. Intent dispatches to RAG handler or Order Tools handler.
+    3. Grounded context is passed to LLM handler (Gemini) for response generation.
+    Logs structured timings without logging personal data or secrets.
+    """
+    import time
+    t_start = time.perf_counter()
+    session_prefix = session_id[:8] if session_id else "unknown"
+
+    state: AgentState = {
         "session_id": session_id,
         "message": message,
-    })
+    }
+
+    # Step 1: Decision routing
+    t_route_0 = time.perf_counter()
+    state = router_node(state)
+    t_route_ms = (time.perf_counter() - t_route_0) * 1000.0
+
+    intent = state.get("intent", "RAG")
+    is_fallback = state.get("is_fallback", False)
+
+    # Step 2: Intent-based handler dispatch
+    t_handler_0 = time.perf_counter()
+    if intent == "TOOLS":
+        state = order_tool_node(state)
+        handler_name = "order_tool_node"
+    else:
+        state = rag_node(state)
+        handler_name = "rag_node"
+    t_handler_ms = (time.perf_counter() - t_handler_0) * 1000.0
+
+    # Step 3: LLM response generation (if not already handled deterministically)
+    t_llm_0 = time.perf_counter()
+    bypassed_llm = bool(state.get("response"))
+    state = llm_node(state)
+    t_llm_ms = (time.perf_counter() - t_llm_0) * 1000.0
+
+    t_total_ms = (time.perf_counter() - t_start) * 1000.0
+
+    logger.info(
+        "[TIMING] session_prefix=%s intent=%s is_fallback=%s route_ms=%.1f handler=%s handler_ms=%.1f llm_ms=%.1f bypassed_llm=%s total_ms=%.1f",
+        session_prefix,
+        intent,
+        is_fallback,
+        t_route_ms,
+        handler_name,
+        t_handler_ms,
+        t_llm_ms,
+        bypassed_llm,
+        t_total_ms,
+    )
+
+    return state
+
+# Clean handler aliases for direct Python orchestration
+route_request = router_node
+handle_rag = rag_node
+handle_order_tools = order_tool_node
+handle_llm_response = llm_node

@@ -457,7 +457,7 @@ def _render_chat_markdown(text: str) -> str:
         import html
         return html.escape(text).replace("\n", "<br>")
 
-# Sends a user message through the LangGraph AI agent and returns its response.
+# Sends a user message through the AI agent and returns its response.
 @admin_bp.route("/agent/chat", methods=["POST"])
 def agent_chat():
     data = request.get_json(silent=True) or {}

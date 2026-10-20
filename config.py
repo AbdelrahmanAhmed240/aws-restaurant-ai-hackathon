@@ -25,7 +25,7 @@ class Config:
 
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    # Google Gemini Configuration (Sole LLM Provider)
+    # Google Gemini Configuration (Sole Generative LLM Provider)
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     GEMINI_EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
@@ -33,7 +33,7 @@ class Config:
     # ChromaDB Vector Store Path
     CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", str(BASE_DIR / "data" / "chroma_db"))
 
-    # Agent defaults for future LangGraph/LLM usage
+    # Agent defaults for LLM usage
     AGENT_TEMPERATURE = float(os.getenv("AGENT_TEMPERATURE", "0.3"))
     AGENT_MAX_TOKENS = int(os.getenv("AGENT_MAX_TOKENS", "2048"))
 

@@ -1,7 +1,6 @@
 flask>=3.0.0               # Web framework for building the restaurant dashboard and API
 flask-sqlalchemy>=3.1.0    # Connects Flask with SQLAlchemy and manages the database
 sqlalchemy>=2.0.0          # ORM/toolkit for interacting with SQL databases using Python
-langgraph>=0.2.0           # Builds multi-step AI/agent workflows as graphs
 chromadb>=0.5.0            # Vector database used to store and search embeddings for RAG
 python-dotenv>=1.0.0       # Loads environment variables from the .env file
-google-genai>=2.0.0        # Official Google Gen AI SDK for Gemini models
+google-genai>=2.0.0        # Official Google Gen AI SDK for Gemini models (response generation & embeddings)
