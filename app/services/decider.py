@@ -230,13 +230,32 @@ def _fallback_route_intent(message: str, session_id: str = "") -> str:
     """
     text = (message or "").strip().lower()
 
-    # 1. Order tracking
+    # 1. Greetings
+    greetings = {"hello", "hi", "hey", "good morning", "good evening", "welcome", "greetings", "صباح الخير", "مساء الخير", "مرحبا", "اهلا", "أهلا", "السلام عليكم", "ازيك", "ازيكم"}
+    clean_text = text.strip(" ?.!؟")
+    if clean_text in greetings or bool(re.match(r"^(?:hello|hi|hey|good\s+morning|good\s+evening|welcome|مرحبا|اهلا|أهلا|السلام عليكم)[!\.\s]*$", text)):
+        return "RAG"
+
+    # 2. Dietary inquiries
+    if any(w in text for w in ("vegetarian", "vegan", "veggie", "نباتي", "نباتية", "diet", "healthy")):
+        return "RAG"
+
+    # 3. Delivery policy / service inquiries
+    delivery_policy_patterns = (
+        "do you offer delivery", "do you have delivery", "is delivery available", "delivery policy",
+        "delivery fee", "delivery fees", "how much is delivery", "areas do you deliver", "deliver to all",
+        "بتوصلوا", "في توصيل", "سعر التوصيل", "مصاريف التوصيل"
+    )
+    if any(p in text for p in delivery_policy_patterns):
+        return "RAG"
+
+    # 4. Order tracking
     tracking_signals = ("track", "status", "حالة", "تتبع", "where is my order", "where's my order", "فين طلبي", "وصل لفين")
     has_order_code = bool(_extract_order_code(message))
     if any(sig in text for sig in tracking_signals) or (has_order_code and ("order" in text or "طلب" in text)):
         return "TOOLS"
 
-    # 2. Confirmation signals
+    # 5. Confirmation signals
     confirm_signals = [
         "confirm", "place order", "submit order", "yes please",
         "تأكيد", "أكد", "تأكيد الطلب", "اكد الطلب", "اعتمد", "سجل الطلب", "نفذ الطلب"
@@ -248,41 +267,39 @@ def _fallback_route_intent(message: str, session_id: str = "") -> str:
     draft = get_draft(session_id) if session_id else {}
     has_active_draft = bool((draft.get("items") or draft.get("order_type")) and draft.get("stage") != "confirmed")
 
-    # 3. Upsell declines or accepts
+    # 6. Upsell declines or accepts
     decline_signals = ["no", "no thanks", "no thank you", "none", "لا", "لا شكرا", "لا شكراً", "لا تمام", "تمام كده", "مش عايز", "مش عاوز", "كفاية", "بس كده"]
     combo_signals = ["make it combo", "make them combo", "add combo", "combo please", "upgrade to combo", "خليهم كومبو", "مع كومبو", "ضيف كومبو", "نعم كومبو", "عايز كومبو", "عاوز كومبو"]
     if has_active_draft:
-        clean_text = text.strip(" .!?,")
         if (clean_text in decline_signals or any(clean_text.startswith(s + " ") for s in ["no", "no thanks", "لا", "لا شكرا"])) or any(sig in text for sig in combo_signals):
             return "TOOLS"
 
-    # 4. Cancellation attempt vs Policy inquiry
+    # 7. Cancellation attempt vs Policy inquiry
     if any(sig in text for sig in ("cancel", "إلغاء", "الغاء", "الغي", "كنسل")):
         is_policy_inquiry = any(w in text for w in ("policy", "rules", "can i", "could i", "how", "what", "fee", "fees", "سياسة", "شروط", "هل", "ممكن", "ينفع", "رسوم", "لو حبيت")) or "?" in text or "؟" in text
         if is_policy_inquiry:
             return "RAG"
         return "TOOLS"
 
-    # 2. Informational questions take precedence unless an explicit ordering action is stated
-    # Check for question markers or inquiry patterns
+    # 8. Informational questions take precedence unless an explicit ordering action is stated
     inquiry_question_starters = [
         "what", "how", "where", "when", "why", "who", "which", "can i", "could i", "do you", "is there", "are there", "tell me",
         "show me", "list", "أين", "فين", "ما هي", "ايه هي", "إيه هي", "كام", "هل", "ممكن اعرف"
     ]
     is_question_structure = "?" in text or "؟" in text or any(re.search(rf"\b{re.escape(k)}\b", text) for k in inquiry_question_starters)
-    
+
     info_topic_signals = [
         "hours", "open", "close", "working hours", "branch", "branches", "location", "locations", "address",
         "ingredients", "contain", "include", "policy", "fee", "fees", "deliver to", "delivery to", "area", "areas",
+        "vegetarian", "vegan", "price", "cost",
         "مواعيد", "شغالين", "بيفتح", "بيقفل", "ساعات العمل", "فروع", "فرعكم", "عنوان", "مكان",
-        "مكونات", "يحتوي", "فيه", "رسوم", "سياسة", "مصاريف", "مناطق", "بتوصلوا"
+        "مكونات", "يحتوي", "فيه", "رسوم", "سياسة", "مصاريف", "مناطق", "بتوصلوا", "سعر", "اسعار", "بكام"
     ]
-    # An inquiry query must either have an explicit question structure + topic, or contain an explicit query phrase
     is_explicit_info_query = (
         is_question_structure and any(sig in text for sig in info_topic_signals)
-    ) or any(re.search(rf"\b(?:what\s+are|where\s+are|show|list)\s+.*(?:branches|locations|hours)\b", text) for _ in [1])
+    ) or any(re.search(rf"\b(?:what\s+are|where\s+are|show|list)\s+.*(?:branches|locations|hours|meals|menu)\b", text) for _ in [1])
 
-    # Pricing, recommendation, or product lookup signals route to TOOLS per decider criteria
+    # Pricing, recommendation, or product lookup signals
     pricing_recommendation_signals = [
         "price", "prices", "cost", "cheapest", "most expensive", "how much", "under", "egp", "le",
         "recommend", "recommendation", "suggest", "suggestion",
@@ -296,34 +313,24 @@ def _fallback_route_intent(message: str, session_id: str = "") -> str:
     # Explicit ordering verbs (actual intent to buy or add items to an order)
     order_action_verbs = [
         "place an order", "create order", "i want to order", "order now", "عاوز أطلب", "عايز أطلب", "أطلب", "اطلب", "طلب أوردر",
-        "i want", "i'd like", "give me", "bring me", "add", "عاوز", "عايز", "أريد", "اريد", "هاتلي", "ابعتلي", "وصلني", "ضيف",
-        "recommend", "suggest", "ترشيح", "رشحلي", "اقتراح"
+        "give me", "bring me", "هاتلي", "ابعتلي", "وصلني",
     ]
     has_order_action = any(v in text for v in order_action_verbs)
 
-    # Fulfillment detail mentions (specifying address, delivery, pickup)
-    fulfillment_words = [
-        "pickup", "dine in", "dine-in", "استلام", "صالة", "طاولة", "ترابيزة",
-        "cash", "visa", "كاش", "فيزا",
-        "street", "st.", "apartment", "apt", "floor", "building", "address", "delivery", "شارع", "شقة", "دور", "عمارة", "عنوان", "توصيل"
+    # Checkout fulfillment details when customer has active draft or stated delivery/pickup details
+    fulfillment_phrases = [
+        "pickup please", "for pickup", "pickup from", "dine in", "dine-in", "استلام", "صالة", "طاولة", "ترابيزة",
+        "cash on delivery", "pay cash", "pay visa", "كاش", "فيزا",
+        "delivery address", "my address", "deliver to", "street", "st.", "apartment", "apt", "floor", "building", "شارع", "شقة", "دور", "عمارة"
     ]
-    has_fulfillment_detail = any(w in text for w in fulfillment_words)
+    has_fulfillment_detail = any(w in text for w in fulfillment_phrases)
 
-    # Menu item mentions
-    menu_item_signals = (
-        "quarter broasted", "broasted", "chicken strips", "strips", "break meal", "break",
-        "fatta", "basmatio", "french fries", "fries", "basmati rice", "rice", "coleslaw",
-        "garlic dip", "kaiser bun", "bun", "bbq", "cheddar", "ranch", "sweet chili", "soft drink", "water",
-        "بسمتيو", "بروستد", "ستربس", "بريك", "فتة", "بطاطس", "أرز", "رز", "ثومية", "كول سلو", "شيدر"
-    )
-    has_menu_item = any(item in text for item in menu_item_signals)
-    has_phone = bool(re.search(r"(?:(?:\+?20)|0)?1[0125]\d{8}\b", text))
-
-    # If it's an explicit info inquiry without explicit ordering verbs/phone/pricing, route to RAG
-    if is_explicit_info_query and not has_order_action and not has_phone and not has_pricing_or_recommendation:
+    # If it's an explicit info query or price inquiry without explicit ordering verbs, route to RAG
+    if (is_explicit_info_query or has_pricing_or_recommendation) and not has_order_action:
         return "RAG"
 
-    if has_pricing_or_recommendation or has_order_action or has_phone or has_fulfillment_detail or has_menu_item:
+    has_phone = bool(re.search(r"(?:(?:\+?20)|0)?1[0125]\d{8}\b", text))
+    if has_order_action or (has_active_draft and (has_fulfillment_detail or has_phone)):
         return "TOOLS"
 
     if has_active_draft:
@@ -348,8 +355,8 @@ def _get_routing_question():
         _ROUTING_QUESTION = ChoiceQuestion(
             instructions="Classify whether this restaurant customer message requires general information/policies (RAG) or ordering/fulfillment/transactional tools (TOOLS).",
             criteria={
-                "RAG": "Inquiries about restaurant details, branch locations, operating hours, delivery fees, cancellation policy, ingredients, general FAQs.",
-                "TOOLS": "Placing food orders, adding items to cart, menu pricing, recommendations, meal searches, providing fulfillment details (phone, delivery address, branch, payment method), order confirmation, order status tracking."
+                "RAG": "Greetings (hello, hi), inquiries about restaurant details, branch locations, operating hours, delivery policy or fees (e.g. 'Do you offer delivery?'), dietary options (e.g. vegetarian meals), cancellation policy, menu pricing (e.g. 'What is the price of Basmatio?'), budget options, ingredients, general FAQs.",
+                "TOOLS": "Placing food orders (e.g. 'I want to order Break Meal'), adding items to cart, providing checkout fulfillment details during an active order (phone, delivery address, pickup branch, payment method), order confirmation, order status tracking."
             }
         )
         return _ROUTING_QUESTION
@@ -408,7 +415,7 @@ def decide_route(message: str, session_id: str = "", force_fallback: bool = Fals
         "probabilities": {fallback_route: 1.0, ("TOOLS" if fallback_route == "RAG" else "RAG"): 0.0},
     }
 
-def decide_tool(message: str, session_id: str = "", force_fallback: bool = False) -> ToolDecision:
+def decide_tool(message: str, session_id: str = "", force_fallback: bool = False, route_intent: str = "") -> ToolDecision:
     """Dynamic Strands Decider 2B Tool Selection.
     Tags: #strands-decider-2b #tool-selection
     Dynamically classifies message into one of 5 discrete tool actions:
@@ -420,7 +427,7 @@ def decide_tool(message: str, session_id: str = "", force_fallback: bool = False
     """
     engine = get_decider_engine() if not (force_fallback or _decider_disabled) else None
     draft = get_draft(session_id) if session_id else {}
-    context_state = {"draft": draft, "stage": draft.get("stage", "idle")}
+    context_state = {"draft": draft, "stage": draft.get("stage", "idle"), "route_intent": route_intent}
     return intervention_handler.handle_turn(
         session_id=session_id,
         message=message,
@@ -432,14 +439,17 @@ def decide_tool(message: str, session_id: str = "", force_fallback: bool = False
 def router_node(state: AgentState) -> AgentState:
     """Classifies message into 'RAG' or 'TOOLS' using Strands Decider 2B.
     #strands-decider-2b #tool-selection
+    Uses the 5-tool dispatcher schema directly to avoid duplicate model calls,
+    mapping KNOWLEDGE_FAQ -> RAG and all operational tools -> TOOLS.
     """
     session_id = state.get("session_id", "default")
     message = state.get("message", "")
-    dec_result = decide_route(message, session_id=session_id)
-    state["intent"] = dec_result["route"]
-    state["is_fallback"] = dec_result.get("is_fallback", False)
-    state["route_confidence"] = dec_result.get("confidence", 1.0)
-    state["route_probabilities"] = dec_result.get("probabilities", {})
+    tool_dec = decide_tool(message, session_id=session_id)
+    state["tool_decision"] = tool_dec
+    state["intent"] = tool_dec.get("route", "TOOLS")
+    state["is_fallback"] = tool_dec.get("is_fallback", False)
+    state["route_confidence"] = tool_dec.get("confidence", 1.0)
+    state["route_probabilities"] = tool_dec.get("probabilities", {})
     return state
 
 def rag_node(state: AgentState) -> AgentState:
@@ -460,16 +470,91 @@ def rag_node(state: AgentState) -> AgentState:
     if draft.get("items") or draft.get("order_type"):
         parse_user_entities(session_id, message)
 
-    # 1. Deterministic price comparison questions
+    order_action_verbs = (
+        "can i order", "want to order", "i'd like to order", "i would like to order",
+        "give me", "bring me", "add to order", "add to cart", "deliver to me",
+        "أطلب", "اطلب", "هاتلي", "ابعتلي", "ضيف"
+    )
+    info_inquiry_markers = (
+        "know", "tell me", "which", "what", "show", "list", "display", "see",
+        "أعرف", "اعرف", "قولي", "قل لي", "إيه", "ايه", "أي", "اي", "وريني", "اعرض"
+    )
+    has_info_inquiry = any(m in text_lower for m in info_inquiry_markers)
+
+    if any(v in text_lower for v in order_action_verbs):
+        is_explicit_order_action = True
+    elif not has_info_inquiry and any(v in text_lower for v in ("order", "i want", "i'd like", "i'll take", "take", "get", "عاوز", "عايز", "أريد", "اريد", "ضيف")):
+        is_explicit_order_action = True
+    else:
+        is_explicit_order_action = False
+
+    # If the user is expressing an explicit order action in RAG node, route to order_tool_node
+    if is_explicit_order_action:
+        return order_tool_node(state)
+
+    # 1. Greetings
+    clean_no_punct = text_lower.strip(" ?.!؟")
+    is_greeting = clean_no_punct in ("hello", "hi", "hey", "good morning", "good afternoon", "good evening", "welcome", "greetings", "howdy", "مرحبا", "اهلا", "أهلا", "السلام عليكم", "ازيك", "ازيكم", "صباح الخير", "مساء الخير") or bool(re.match(r"^(?:hello|hi|hey|good\s+morning|good\s+evening|welcome|مرحبا|اهلا|أهلا|السلام عليكم)[!\.\s]*$", text_lower))
+    if is_greeting:
+        resp = "Hello! Welcome to Break Restaurant. How can I help you today? You can ask about our menu, dish prices, branches, delivery service, or place an order!"
+        state["response"] = resp
+        state["context"] = resp
+        state["tool_name"] = "greeting"
+        state["tool_result"] = {"ok": True}
+        return state
+
+    # 2. Delivery policy / service inquiries
+    is_delivery_inquiry = any(re.search(rf"\b{p}\b", text_lower) for p in (
+        "do you offer delivery", "do you have delivery", "is delivery available", "delivery policy",
+        "delivery fee", "delivery fees", "delivery time", "how much is delivery", "areas do you deliver", "deliver to all",
+        "بتوصلوا", "في توصيل", "سعر التوصيل", "مصاريف التوصيل"
+    )) or (("delivery" in text_lower or "توصيل" in text_lower) and any(q in text_lower for q in ("do you", "can you", "what is", "how much", "available", "fee", "policy", "areas", "?", "هل", "بكام", "كام")))
+    if is_delivery_inquiry and not is_explicit_order_action:
+        delivery_text = (
+            "### 🛵 Delivery Service & Policy:\n\n"
+            "* **Availability**: Yes, we deliver across all areas in Cairo and Alexandria!\n"
+            "* **Delivery Fee**: 25 EGP\n"
+            "* **Delivery Time**: 30 to 45 minutes\n"
+            "* **Minimum Order**: None\n"
+            "* **Payment Method**: Cash on delivery\n"
+            "* **Delivery Hotline**: 16099 (or order directly right here in this chat!)"
+        )
+        state["response"] = delivery_text
+        state["context"] = delivery_text
+        state["tool_name"] = "delivery_policy"
+        state["tool_result"] = {"ok": True}
+        return state
+
+    # 3. Dietary inquiries (vegetarian, vegan)
+    is_dietary_query = any(w in text_lower for w in ("vegetarian", "vegan", "veggie", "نباتي", "نباتية"))
+    if is_dietary_query:
+        diet_text = (
+            "All of our main meals contain chicken (broasted chicken or crispy chicken strips), so we do not currently offer vegetarian main meals.\n\n"
+            "However, we offer vegetarian-friendly sides, sauces, and drinks:\n"
+            "* **French Fries** — 35 EGP\n"
+            "* **Basmati Rice** — 25 EGP\n"
+            "* **Coleslaw** — 15 EGP\n"
+            "* **Kaiser Bun** — 5 EGP\n"
+            "* **Sauces**: Garlic Dip (15 EGP), BBQ Sauce (25 EGP), Ranch (15 EGP), Sweet Chili (15 EGP), Cheddar Cheese Sauce (35 EGP)\n"
+            "* **Drinks**: Soft Drink (25 EGP), Mineral Water (10 EGP)"
+        )
+        state["response"] = diet_text
+        state["context"] = diet_text
+        state["tool_name"] = "dietary_inquiry"
+        state["tool_result"] = {"ok": True, "vegetarian_meals": False}
+        return state
+
+    # 4. Deterministic price inquiries & budget comparisons
     price_info = query_price_info(message)
     if price_info.get("ok"):
-        pieces.append(price_info.get("text", ""))
-        state["context"] = "\n\n".join(pieces)
+        resp_text = price_info.get("text", "")
+        state["response"] = resp_text
+        state["context"] = resp_text
         state["tool_name"] = "query_price_info"
         state["tool_result"] = price_info
         return state
 
-    # 2. Recommendation inquiries
+    # 5. Recommendation inquiries
     rec_signals = ["recommend", "suggest", "best", "hungry", "what should i get", "spicy", "ترشيح", "رشحلي", "اقتراح"]
     if any(sig in text_lower for sig in rec_signals):
         rec_result = recommend_products(message, limit=3)
@@ -481,21 +566,11 @@ def rag_node(state: AgentState) -> AgentState:
             state["tool_result"] = rec_result
             return state
 
-    # 3. All Meals query
-    if any(kw in text_lower for kw in ("all meals", "available meals", "what meals", "list meals", "show meals", "الوجبات", "كل الوجبات")):
-        meals = Product.query.filter(Product.category == "Meals", Product.is_available == True).order_by(Product.price.asc()).all()
-        lines = ["### 🍗 Available Meals\n"] + _format_product_item_lines(meals)
-        pieces.append("\n".join(lines).strip())
-        state["context"] = "\n\n".join(pieces)
-        state["tool_name"] = "list_meals"
-        state["tool_result"] = {"ok": True, "count": len(meals)}
-        return state
-
-    # 4. Full menu query
-    is_menu_query = bool(re.search(
-        r"\b(?:menu|can\s+i\s+see\s+(?:the\s+)?menu|show\s+(?:me\s+)?(?:the\s+)?menu|what\s+do\s+you\s+have|display\s+(?:the\s+)?(?:full\s+)?menu|full\s+menu|view\s+(?:the\s+)?menu|what\'?s\s+on\s+the\s+menu)\b",
+    # 6. Full menu query (checked BEFORE main meals query)
+    is_menu_query = (bool(re.search(
+        r"\b(?:menu|on\s+the\s+menu|in\s+the\s+menu|can\s+i\s+see\s+(?:the\s+)?menu|show\s+(?:me\s+)?(?:the\s+)?menu|what\s+do\s+you\s+have|display\s+(?:the\s+)?(?:full\s+)?menu|full\s+menu|view\s+(?:the\s+)?menu|what\'?s\s+on\s+the\s+menu)\b",
         text_lower
-    )) or any(kw in text_lower for kw in ("منيو", "قائمة الطعام", "قائمه الطعام", "قائمة", "قائمه", "وريني المنيو", "عايز اشوف المنيو", "عاوز اشوف المنيو"))
+    )) or any(kw in text_lower for kw in ("منيو", "قائمة الطعام", "قائمه الطعام", "قائمة", "قائمه", "وريني المنيو", "عايز اشوف المنيو", "عاوز اشوف المنيو"))) and not any(w in text_lower for w in ("isn't on the menu", "not on the menu", "مش في المنيو", "price of a dish"))
 
     if is_menu_query:
         product_results = search_products("", limit=50)
@@ -515,15 +590,30 @@ def rag_node(state: AgentState) -> AgentState:
         state["tool_result"] = {"ok": True, "count": len(items)}
         return state
 
-    # 5. Branch directory & pickup location inquiries
+    # 7. Main Meals query (specifically requesting main meals or meals category, without asking for the full menu)
+    is_main_meals_query = any(kw in text_lower for kw in (
+        "main meal", "main meals", "all meals", "available meals", "what meals", "list meals", "show meals",
+        "الوجبات الرئيسية", "وجبات رئيسية", "الوجبات", "كل الوجبات"
+    )) or bool(re.search(r"\b(?:what|show|list)\s+(?:main\s+)?meals\b", text_lower))
+    if is_main_meals_query:
+        meals = Product.query.filter(Product.category == "Meals", Product.is_available == True).order_by(Product.price.asc()).all()
+        lines = ["### 🍗 Available Meals\n"] + _format_product_item_lines(meals)
+        meals_text = "\n".join(lines).strip()
+        state["response"] = meals_text
+        state["context"] = meals_text
+        state["tool_name"] = "list_meals"
+        state["tool_result"] = {"ok": True, "count": len(meals)}
+        return state
+
+    # 8. Branch directory & pickup location inquiries
     branch_inquiry_patterns = [
         r"\b(?:what\s+(?:are\s+)?(?:the\s+)?branches|where\s+are\s+(?:the\s+|your\s+)?branches|list\s+(?:the\s+)?branches|show\s+(?:the\s+)?branches|which\s+branches|branches\s+(?:can\s+i|available|offer)|where\s+can\s+i\s+(?:pick\s*up|collect)|pick\s*up\s+from|locations|what\s+are\s+your\s+locations)\b",
         r"(?:فروع|فرعكم|مكانكم|اماكنكم|أماكنكم|عناوينكم|منين\s*استلم|استلم\s*منين|الفروع\s*المتاحة)",
     ]
     if any(re.search(pat, text_lower) for pat in branch_inquiry_patterns) or ("branch" in text_lower and any(q in text_lower for q in ("what", "where", "which", "how", "list", "show", "can i", "?"))):
         branch_dir = _format_branch_directory()
-        pieces.append(branch_dir)
-        state["context"] = "\n\n".join(pieces)
+        state["response"] = branch_dir
+        state["context"] = branch_dir
         state["tool_name"] = "branch_directory"
         state["tool_result"] = {"ok": True, "count": len(AVAILABLE_BRANCHES)}
         return state
@@ -681,18 +771,63 @@ def order_tool_node(state: AgentState) -> AgentState:
     message = state.get("message", "")
     text_lower = (message or "").strip().lower()
 
-    # Dynamic Strands Decider 2B #tool-selection
-    tool_dec = decide_tool(message, session_id=session_id)
+    # Reuse tool decision from router_node if already computed, avoiding duplicate SLM inference
+    tool_dec = state.get("tool_decision") or decide_tool(message, session_id=session_id)
     state["tool_decision"] = tool_dec
     selected_tool = tool_dec.get("tool", "")
 
-    # Intercept explicit full-menu requests if routed to TOOLS (e.g. from general 'what do you have')
-    # but only if user isn't trying to place an explicit order or modify items
-    is_menu_query = (selected_tool == "MENU_QUERY") or bool(re.search(
-        r"\b(?:menu|can\s+i\s+see\s+(?:the\s+)?menu|show\s+(?:me\s+)?(?:the\s+)?menu|what\s+do\s+you\s+have|display\s+(?:the\s+)?(?:full\s+)?menu|full\s+menu|view\s+(?:the\s+)?menu|what\'?s\s+on\s+the\s+menu)\b",
+    # Intercept specific Main Meals query when not an order action
+    is_main_meals_query = any(kw in text_lower for kw in (
+        "main meal", "main meals", "all meals", "available meals", "what meals", "list meals", "show meals",
+        "الوجبات الرئيسية", "وجبات رئيسية", "الوجبات", "كل الوجبات"
+    )) or bool(re.search(r"\b(?:what|show|list)\s+(?:main\s+)?meals\b", text_lower))
+    # Distinguish general full menu request from specific single-category (main meals) request
+    # A query is a full-menu request if it explicitly mentions "menu", "what do you have", or general menu phrases,
+    # and does NOT specifically ask only for main meals (e.g. "what main meals do you have")
+    is_explicit_menu_word = bool(re.search(
+        r"\b(?:menu|on\s+the\s+menu|in\s+the\s+menu|can\s+i\s+see\s+(?:the\s+)?menu|show\s+(?:me\s+)?(?:the\s+)?menu|what\s+do\s+you\s+have|display\s+(?:the\s+)?(?:full\s+)?menu|full\s+menu|view\s+(?:the\s+)?menu|what\'?s\s+on\s+the\s+menu)\b",
         text_lower
     )) or any(kw in text_lower for kw in ("منيو", "قائمة الطعام", "قائمه الطعام", "قائمة", "قائمه", "وريني المنيو", "عايز اشوف المنيو", "عاوز اشوف المنيو"))
-    is_explicit_order_action = any(v in text_lower for v in ("i want", "i'd like", "give me", "bring me", "add", "عاوز", "عايز", "أريد", "اريد", "هاتلي", "ابعتلي", "وصل", "وصلني", "ضيف"))
+    is_menu_query = is_explicit_menu_word or (selected_tool == "MENU_QUERY" and not is_main_meals_query)
+    order_action_verbs = (
+        "can i order", "want to order", "i'd like to order", "i would like to order",
+        "give me", "bring me", "add to order", "add to cart", "deliver to me",
+        "أطلب", "اطلب", "هاتلي", "ابعتلي", "ضيف"
+    )
+    info_inquiry_markers = (
+        "know", "tell me", "which", "what", "show", "list", "display", "see",
+        "أعرف", "اعرف", "قولي", "قل لي", "إيه", "ايه", "أي", "اي", "وريني", "اعرض"
+    )
+    has_info_inquiry = any(m in text_lower for m in info_inquiry_markers)
+
+    if any(v in text_lower for v in order_action_verbs):
+        is_explicit_order_action = True
+    elif not has_info_inquiry and any(v in text_lower for v in ("order", "i want", "i'd like", "i'll take", "take", "get", "عاوز", "عايز", "أريد", "اريد", "ضيف")):
+        is_explicit_order_action = True
+    else:
+        is_explicit_order_action = False
+
+    # Intercept price queries and route through query_price_info ONLY when not an order action
+    if not is_explicit_order_action:
+        price_info = query_price_info(message)
+        if price_info.get("ok"):
+            state["response"] = price_info.get("text", "")
+            state["context"] = price_info.get("text", "")
+            state["tool_name"] = "query_price_info"
+            state["tool_result"] = price_info
+            return state
+
+    # Specific main meals query takes precedence if query specifically asks for main meals and NOT the general menu
+    if is_main_meals_query and not is_menu_query and not is_explicit_order_action:
+        from app.models.product import Product
+        meals = Product.query.filter(Product.category == "Meals", Product.is_available == True).order_by(Product.price.asc()).all()
+        lines = ["### 🍗 Available Meals\n"] + _format_product_item_lines(meals)
+        meals_text = "\n".join(lines).strip()
+        state["response"] = meals_text
+        state["context"] = meals_text
+        state["tool_name"] = "list_meals"
+        state["tool_result"] = {"ok": True, "count": len(meals)}
+        return state
 
     if is_menu_query and not is_explicit_order_action:
         product_results = search_products("", limit=50)
@@ -712,14 +847,15 @@ def order_tool_node(state: AgentState) -> AgentState:
         state["tool_result"] = {"ok": True, "count": len(items)}
         return state
 
-    # Intercept price queries and route through query_price_info
-    price_info = query_price_info(message)
-    if price_info.get("ok"):
-        state["response"] = price_info.get("text", "")
-        state["context"] = price_info.get("text", "")
-        state["tool_name"] = "query_price_info"
-        state["tool_result"] = price_info
-        return state
+    # Intercept price queries and route through query_price_info ONLY when not an order action
+    if not is_explicit_order_action:
+        price_info = query_price_info(message)
+        if price_info.get("ok"):
+            state["response"] = price_info.get("text", "")
+            state["context"] = price_info.get("text", "")
+            state["tool_name"] = "query_price_info"
+            state["tool_result"] = price_info
+            return state
 
     # Intercept pure recommendations if user isn't placing an explicit order
     rec_signals = ["recommend", "suggest", "best", "hungry", "what should i get", "spicy", "ترشيح", "رشحلي", "اقتراح"]
@@ -936,10 +1072,88 @@ def order_tool_node(state: AgentState) -> AgentState:
     summary_text = format_draft_summary(draft)
 
     if not draft.get("items"):
+        # Guard: Check if the message is an inquiry rather than an order request
+        greeting_patterns = [r"\b(?:hello|hi|hey|good\s+morning|good\s+afternoon|good\s+evening)\b", r"(?:مرحبا|اهلا|أهلا|سلام|صباح الخير|مساء الخير)"]
+        if any(re.search(pat, text_lower) for pat in greeting_patterns):
+            resp = "Hello! Welcome to Break Restaurant. How can I help you today? You can ask about our menu, dish prices, branches, delivery service, or place an order!"
+            state["response"] = resp
+            state["context"] = resp
+            state["tool_name"] = "greeting"
+            state["tool_result"] = {"ok": True}
+            return state
+
+        is_delivery_inquiry = any(re.search(rf"\b{p}\b", text_lower) for p in (
+            "do you offer delivery", "do you have delivery", "is delivery available", "delivery policy",
+            "delivery fee", "delivery fees", "delivery time", "how much is delivery", "areas do you deliver", "deliver to all",
+            "بتوصلوا", "في توصيل", "سعر التوصيل", "مصاريف التوصيل"
+        )) or (("delivery" in text_lower or "توصيل" in text_lower) and any(q in text_lower for q in ("do you", "can you", "what is", "how much", "available", "fee", "policy", "areas", "?", "هل", "بكام", "كام")))
+        if is_delivery_inquiry:
+            delivery_text = (
+                "### 🛵 Delivery Service & Policy:\n\n"
+                "* **Availability**: Yes, we deliver across all areas in Cairo and Alexandria!\n"
+                "* **Delivery Fee**: 25 EGP\n"
+                "* **Delivery Time**: 30 to 45 minutes\n"
+                "* **Minimum Order**: None\n"
+                "* **Payment Method**: Cash on delivery\n"
+                "* **Delivery Hotline**: 16099 (or order directly right here in this chat!)"
+            )
+            state["response"] = delivery_text
+            state["context"] = delivery_text
+            state["tool_name"] = "delivery_policy"
+            state["tool_result"] = {"ok": True}
+            return state
+
+        is_dietary_query = any(w in text_lower for w in ("vegetarian", "vegan", "veggie", "نباتي", "نباتية"))
+        if is_dietary_query:
+            diet_text = (
+                "All of our main meals contain chicken (broasted chicken or crispy chicken strips), so we do not currently offer vegetarian main meals.\n\n"
+                "However, we offer vegetarian-friendly sides, sauces, and drinks:\n"
+                "* **French Fries** — 35 EGP\n"
+                "* **Basmati Rice** — 25 EGP\n"
+                "* **Coleslaw** — 15 EGP\n"
+                "* **Kaiser Bun** — 5 EGP\n"
+                "* **Sauces**: Garlic Dip (15 EGP), BBQ Sauce (25 EGP), Ranch (15 EGP), Sweet Chili (15 EGP), Cheddar Cheese Sauce (35 EGP)\n"
+                "* **Drinks**: Soft Drink (25 EGP), Mineral Water (10 EGP)"
+            )
+            state["response"] = diet_text
+            state["context"] = diet_text
+            state["tool_name"] = "dietary_inquiry"
+            state["tool_result"] = {"ok": True, "vegetarian_meals": False}
+            return state
+
+        price_info = query_price_info(message)
+        if price_info.get("ok"):
+            state["response"] = price_info.get("text", "")
+            state["context"] = price_info.get("text", "")
+            state["tool_name"] = "query_price_info"
+            state["tool_result"] = price_info
+            return state
+
+        branch_inquiry_patterns = [
+            r"\b(?:what\s+(?:are\s+)?(?:the\s+)?branches|where\s+are\s+(?:the\s+|your\s+)?branches|list\s+(?:the\s+)?branches|show\s+(?:the\s+)?branches|which\s+branches|branches\s+(?:can\s+i|available|offer)|where\s+can\s+i\s+(?:pick\s*up|collect)|pick\s*up\s+from|locations|what\s+are\s+your\s+locations)\b",
+            r"(?:فروع|فرعكم|مكانكم|اماكنكم|أماكنكم|عناوينكم|منين\s*استلم|استلم\s*منين|الفروع\s*المتاحة)",
+        ]
+        if any(re.search(pat, text_lower) for pat in branch_inquiry_patterns) or ("branch" in text_lower and any(q in text_lower for q in ("what", "where", "which", "how", "list", "show", "can i", "?"))):
+            branch_dir = _format_branch_directory()
+            state["response"] = branch_dir
+            state["context"] = branch_dir
+            state["tool_name"] = "branch_directory"
+            state["tool_result"] = {"ok": True, "count": len(AVAILABLE_BRANCHES)}
+            return state
+
         draft["stage"] = "selecting_items"
         state["tool_name"] = "order_draft"
         state["tool_result"] = {"ok": True, "stage": "selecting_items"}
-        state["response"] = "What meal would you like to order today? You can view our menu or tell me what you're craving!"
+
+        # If user explicitly expressed desire to order, ask what meal they'd like
+        explicit_order_intent = any(v in text_lower for v in (
+            "order", "i want to order", "can i order", "start order", "place order",
+            "أطلب", "اطلب", "عايز اطلب", "عاوز اطلب"
+        ))
+        if explicit_order_intent:
+            state["response"] = "What meal would you like to order today? You can view our menu or tell me what you're craving!"
+        else:
+            state["response"] = "I'm here to help! Would you like to view our menu, check dish prices, ask about delivery, or start an order?"
         state["context"] = state["response"]
         return state
 
@@ -1055,7 +1269,7 @@ def order_tool_node(state: AgentState) -> AgentState:
         return state
 
 def llm_node(state: AgentState) -> AgentState:
-    """Invokes Google Gemini with the grounded context prepared by RAG or order tools."""
+    """Invokes the primary LLM provider (Amazon Bedrock) with automatic fallback to Google Gemini."""
     from app.services.agent import reply
 
     if state.get("response"):
@@ -1096,10 +1310,11 @@ def run(session_id: str, message: str) -> dict:
     Replaces graph orchestration with direct, traceable Python execution:
     1. Strands Decider 2B (or observable fallback) classifies intent into RAG or TOOLS.
     2. Intent dispatches to RAG handler or Order Tools handler.
-    3. Grounded context is passed to LLM handler (Gemini) for response generation.
+    3. Grounded context is passed to LLM handler (Amazon Bedrock primary, Google Gemini fallback).
     Logs structured timings without logging personal data or secrets.
     """
     import time
+    from app.services.agent import get_last_provider_used
     t_start = time.perf_counter()
     session_prefix = session_id[:8] if session_id else "unknown"
 
@@ -1131,11 +1346,12 @@ def run(session_id: str, message: str) -> dict:
     bypassed_llm = bool(state.get("response"))
     state = llm_node(state)
     t_llm_ms = (time.perf_counter() - t_llm_0) * 1000.0
+    llm_provider = "deterministic" if bypassed_llm else (get_last_provider_used() or "unknown")
 
     t_total_ms = (time.perf_counter() - t_start) * 1000.0
 
     logger.info(
-        "[TIMING] session_prefix=%s intent=%s is_fallback=%s route_ms=%.1f handler=%s handler_ms=%.1f llm_ms=%.1f bypassed_llm=%s total_ms=%.1f",
+        "[TIMING] session_prefix=%s intent=%s is_fallback=%s route_ms=%.1f handler=%s handler_ms=%.1f llm_ms=%.1f bypassed_llm=%s provider=%s total_ms=%.1f",
         session_prefix,
         intent,
         is_fallback,
@@ -1144,6 +1360,7 @@ def run(session_id: str, message: str) -> dict:
         t_handler_ms,
         t_llm_ms,
         bypassed_llm,
+        llm_provider,
         t_total_ms,
     )
 

@@ -7,7 +7,20 @@ from app.services.decider import run as decider_run
 admin_bp = Blueprint("admin", __name__)
 
 # Main Dashboard Overview
+# Root URL Redirects to Customer Chat Interface
 @admin_bp.route("/")
+def index():
+    """Redirects root URL to the dedicated customer ordering chat."""
+    return redirect(url_for("admin.chat_view"))
+
+# Dedicated Customer Chat Interface
+@admin_bp.route("/chat")
+def chat_view():
+    """Renders dedicated customer-facing AI ordering chat interface."""
+    return render_template("chat.html")
+
+# Main Admin Dashboard Overview
+@admin_bp.route("/admin")
 @admin_bp.route("/dashboard")
 def dashboard():
     """Renders main dashboard overview with summary metrics and recent orders."""

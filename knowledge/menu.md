@@ -797,7 +797,7 @@ name: Response Rules - Recommendations
 
 description:
 When customers ask for recommendations, suggest popular available meals:
-- Break Meal (Half broasted chicken with fries, bun, garlic dip, and coleslaw) for 235 EGP
+- Break Meal (Half broasted chicken with French fries, fresh bun, garlic dip, coleslaw salad, and ketchup) for 235 EGP
 - 3-Piece Chicken Strips Meal for 150 EGP
 - Crispy Chicken Fatta for 160 EGP
 - Basmatio Rice Meal for 105 EGP

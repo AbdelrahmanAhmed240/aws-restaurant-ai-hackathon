@@ -94,13 +94,14 @@ class ToolSelectionDispatcher:
                         "meals, sides, sauces, or drinks."
                     ),
                     "PRICE_BUDGET_INQUIRY": (
-                        "Customer is asking how much an item costs, inquiring about prices, requesting meals "
-                        "within a budget (e.g., under 100 EGP or under 50 EGP), or searching for cheap options."
+                        "Customer is asking how much an item costs (e.g., 'What is the price of Basmatio?'), "
+                        "inquiring about meal prices (e.g., 'How much is a meal?'), requesting meals within a budget, "
+                        "or asking for dish prices."
                     ),
                     "ORDER_CART_OPS": (
-                        "Customer wants to order food, add dishes to cart, accept/decline combo upgrades, "
-                        "provide fulfillment details (phone number, delivery address, pickup branch, payment method), "
-                        "or confirm an ongoing order draft."
+                        "Customer explicitly wants to order food, add dishes to cart (e.g., 'I want to order Break Meal'), "
+                        "accept/decline combo upgrades, provide checkout details (phone number, delivery address, pickup branch, payment method), "
+                        "or confirm an ongoing order draft. Do not choose this for greetings or general questions."
                     ),
                     "ORDER_TRACKING": (
                         "Customer wants to check the status or progress of an existing placed order using an "
@@ -108,7 +109,8 @@ class ToolSelectionDispatcher:
                     ),
                     "KNOWLEDGE_FAQ": (
                         "Customer asks general restaurant questions about branch addresses/locations, opening hours, "
-                        "delivery areas, cancellation policies, ingredients, or contact details."
+                        "delivery policy/service (e.g., 'Do you offer delivery?'), dietary options (e.g., vegetarian meals), "
+                        "cancellation policies, ingredients, contact details, or greets the assistant (e.g., 'hello', 'hi')."
                     ),
                 },
             )
@@ -120,14 +122,36 @@ class ToolSelectionDispatcher:
         state = context_state or {}
         has_active_draft = bool(state.get("draft") and state["draft"].get("items"))
 
+        # Pure greetings signal
+        greetings = {"hello", "hi", "hey", "good morning", "good evening", "welcome", "greetings", "صباح الخير", "مساء الخير", "مرحبا", "اهلا", "أهلا", "السلام عليكم", "ازيك", "ازيكم"}
+        clean_no_punct = text.strip(" ?.!؟")
+        if clean_no_punct in greetings or re.match(r"^(?:hello|hi|hey|good\s+morning|good\s+evening|welcome|مرحبا|اهلا|أهلا|السلام عليكم)[!\.\s]*$", text):
+            chosen = "KNOWLEDGE_FAQ"
+
         # Explicit inquiry / FAQ signals take precedence even if draft is active
         faq_signals = (
             "where", "when", "hours", "open", "close", "policy", "branch", "branches", "location", "address",
-            "delivery area", "deliver to", "ingredients", "فرع", "فروع", "مواعيد", "شغالين", "سياسة", "عنوان", "مكان", "بتوصلوا"
+            "delivery area", "deliver to", "ingredients", "vegetarian", "vegan", "veggie", "نباتي", "نباتية",
+            "فرع", "فروع", "مواعيد", "شغالين", "سياسة", "عنوان", "مكان", "بتوصلوا", "في توصيل"
         )
         is_faq_query = any(re.search(rf"\b{re.escape(w)}\b", text) if w.isascii() else w in text for w in faq_signals)
-        order_action_verbs = ("i want", "i'd like", "order", "add", "أطلب", "عايز", "عاوز", "ضيف", "هاتلي")
-        has_order_action = any(v in text for v in order_action_verbs)
+        is_delivery_policy = any(p in text for p in ("do you offer delivery", "do you have delivery", "is delivery available", "delivery fee", "delivery policy", "areas do you deliver", "بتوصلوا", "في توصيل"))
+        is_dietary = any(w in text for w in ("vegetarian", "vegan", "veggie", "نباتي", "نباتية"))
+
+        info_inquiry_markers = ("know", "tell me", "which", "what", "show", "list", "display", "see", "how much", "cost", "price", "أعرف", "اعرف", "قولي", "قل لي", "إيه", "ايه", "أي", "اي", "وريني", "اعرض", "بكام", "سعر")
+        has_info_inquiry = any(m in text for m in info_inquiry_markers)
+
+        order_action_verbs = (
+            "can i order", "want to order", "i'd like to order", "i would like to order",
+            "give me", "bring me", "add to order", "add to cart", "deliver to me",
+            "أطلب", "اطلب", "هاتلي", "ابعتلي", "ضيف"
+        )
+        if any(v in text for v in order_action_verbs):
+            has_order_action = True
+        elif not has_info_inquiry and any(v in text for v in ("i want", "i'd like", "order", "add", "i'll take", "take", "get", "عايز", "عاوز", "أريد", "اريد", "ضيف")):
+            has_order_action = True
+        else:
+            has_order_action = False
 
         pricing_signals = (
             "under", "budget", "price", "prices", "how much", "cost", "cheapest",
@@ -138,23 +162,32 @@ class ToolSelectionDispatcher:
         # Order tracking signal
         if re.search(r"\b(?:ord-\d{5,}|track|order\s+status|أوردر|تتبع)\b", text) and re.search(r"ord-\d+", text):
             chosen = "ORDER_TRACKING"
+        # Greetings check
+        elif clean_no_punct in greetings or re.match(r"^(?:hello|hi|hey|good\s+morning|good\s+evening|welcome|مرحبا|اهلا|أهلا|السلام عليكم)[!\.\s]*$", text):
+            chosen = "KNOWLEDGE_FAQ"
+        # Delivery policy inquiry
+        elif is_delivery_policy and not has_order_action:
+            chosen = "KNOWLEDGE_FAQ"
+        # Dietary inquiry
+        elif is_dietary and not has_order_action:
+            chosen = "KNOWLEDGE_FAQ"
         # Full menu browsing signal
-        elif re.search(r"\b(?:menu|what do you have|food list|المنيو|قائمة الطعام|بتبيعوا إيه)\b", text) and not re.search(r"\b(?:under|cheapest|cost|price|order|add)\b", text):
+        elif re.search(r"\b(?:menu|what do you have|food list|المنيو|قائمة الطعام|بتبيعوا إيه)\b", text) and not re.search(r"\b(?:under|cheapest|cost|price|order|add|isn\'?t\s+on\s+the\s+menu|not\s+on\s+the\s+menu)\b", text):
             chosen = "MENU_QUERY"
         # FAQ inquiry takes precedence if it's an explicit info question without ordering action
-        elif is_faq_query and not has_order_action:
+        elif (is_faq_query or is_delivery_policy or is_dietary) and not has_order_action:
             chosen = "KNOWLEDGE_FAQ"
         # Pricing and budget queries
         elif has_pricing and not has_order_action:
             chosen = "PRICE_BUDGET_INQUIRY"
         # Active order operations or explicit ordering verbs
-        elif has_order_action or any(w in text for w in ("meal", "pickup", "delivery", "cash", "visa", "confirm", "كاش", "توصيل", "استلام")) or has_active_draft:
+        elif has_order_action or (has_active_draft and any(w in text for w in ("pickup", "delivery", "cash", "visa", "confirm", "كاش", "توصيل", "استلام"))):
             chosen = "ORDER_CART_OPS"
         else:
             chosen = "KNOWLEDGE_FAQ"
 
         probs = {tool: (1.0 if tool == chosen else 0.0) for tool in TOOL_ACTIONS}
-        route = "RAG" if chosen == "KNOWLEDGE_FAQ" else "TOOLS"
+        route = "TOOLS" if chosen in ("ORDER_CART_OPS", "ORDER_TRACKING") else "RAG"
         return {
             "tool": chosen,
             "route": route,
@@ -212,7 +245,7 @@ class ToolSelectionDispatcher:
             if best_tool not in TOOL_ACTIONS:
                 best_tool = "KNOWLEDGE_FAQ"
 
-            route = "RAG" if best_tool == "KNOWLEDGE_FAQ" else "TOOLS"
+            route = "TOOLS" if best_tool in ("ORDER_CART_OPS", "ORDER_TRACKING") else "RAG"
 
             logger.info(
                 "[STRANDS DECIDER 2B #tool-selection] Tool: %s, Route: %s, Confidence: %.4f",

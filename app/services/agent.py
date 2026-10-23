@@ -1,12 +1,63 @@
 from config import config
 import logging
 import re
-from typing import Any, Dict, List
+import time
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Modular Provider State (Bedrock Primary, Gemini Automatic Fallback)
+_bedrock_client = None
+_bedrock_cooldown_until: float = 0.0
+_bedrock_permanently_unavailable: bool = False
+_bedrock_auth_retry_after: float = 0.0
+_bedrock_last_skip_reason: str = ""
+_last_provider_used: str = "none"
+
 _gemini_client = None
+_gemini_mock_injected: bool = False
 _quota_exhausted = False
+
+def get_bedrock_client():
+    """Lazily initialize and reuse Amazon Bedrock Runtime client with fail-fast timeout and 1 attempt."""
+    global _bedrock_client
+    if _bedrock_client is None:
+        import boto3
+        from botocore.config import Config as BotoConfig
+
+        region = getattr(config, "AWS_REGION", "eu-north-1") or "eu-north-1"
+        timeout = int(getattr(config, "BEDROCK_TIMEOUT", 10) or 10)
+        boto_cfg = BotoConfig(
+            connect_timeout=min(5, timeout),
+            read_timeout=timeout,
+            retries={"max_attempts": 1, "mode": "standard"},
+        )
+        _bedrock_client = boto3.client("bedrock-runtime", region_name=region, config=boto_cfg)
+    return _bedrock_client
+
+def set_bedrock_client(client: Any = None):
+    """Set or override Bedrock Runtime client (useful for testing and fallback simulation)."""
+    global _bedrock_client, _bedrock_cooldown_until, _bedrock_permanently_unavailable, _bedrock_auth_retry_after, _bedrock_last_skip_reason
+    _bedrock_client = client
+    _bedrock_cooldown_until = 0.0
+    _bedrock_permanently_unavailable = False
+    _bedrock_auth_retry_after = 0.0
+    _bedrock_last_skip_reason = ""
+
+def reset_provider_state():
+    """Reset provider circuit-breaker and quota state (useful for testing)."""
+    global _bedrock_cooldown_until, _bedrock_permanently_unavailable, _bedrock_auth_retry_after, _quota_exhausted, _last_provider_used, _gemini_mock_injected, _bedrock_last_skip_reason
+    _bedrock_cooldown_until = 0.0
+    _bedrock_permanently_unavailable = False
+    _bedrock_auth_retry_after = 0.0
+    _quota_exhausted = False
+    _last_provider_used = "none"
+    _gemini_mock_injected = False
+    _bedrock_last_skip_reason = ""
+
+def get_last_provider_used() -> str:
+    """Return the provider name ('bedrock', 'gemini', or 'deterministic_fallback') used on the most recent LLM call."""
+    return _last_provider_used
 
 def get_gemini_client():
     """Lazily initialize Google Gen AI SDK client with single attempt and fail-fast timeout.
@@ -31,10 +82,15 @@ def get_gemini_client():
 
 def set_gemini_client(client: Any = None):
     """Set or override Gemini client (useful for mock testing)."""
-    global _gemini_client, _quota_exhausted
+    global _gemini_client, _quota_exhausted, _gemini_mock_injected
     _gemini_client = client
+    _gemini_mock_injected = (client is not None)
     if client is not None:
         _quota_exhausted = False
+
+# Backward-compatible aliases
+get_client = get_gemini_client
+set_client = set_gemini_client
 
 # In-memory conversation state keyed by session ID.
 _conversations: dict[str, list] = {}
@@ -105,18 +161,42 @@ _SYSTEM_PROMPT = (
     "Assistant:\n"
     "### 📋 Our Menu\n\n"
     "#### 🍗 Meals\n\n"
-    "**Break Meal — 235 EGP**\n"
-    "* Includes: Half broasted chicken, fries, bread, garlic dip, coleslaw.\n"
-    "* Combo upgrade: +50 EGP for fries and a drink.\n\n"
+    "* **Basmatio Rice Meal — 105 EGP**\n"
+    "  * Includes: Seasoned basmati rice, crispy chicken strips pieces, coleslaw salad.\n"
+    "  * Combo upgrade: +50 EGP for fries and a drink.\n"
+    "* **Quarter Broasted Chicken — 135 EGP**\n"
+    "  * Includes: Broasted chicken thigh, French fries, fresh bun, small garlic dip, ketchup.\n"
+    "  * Combo upgrade: +50 EGP for fries and a drink.\n"
+    "* **3-Piece Chicken Strips Meal — 150 EGP**\n"
+    "  * Includes: Three crispy chicken strips, French fries, fresh bun, garlic dip.\n"
+    "  * Combo upgrade: +50 EGP for fries and a drink.\n"
+    "* **Crispy Chicken Fatta — 160 EGP**\n"
+    "  * Includes: Seasoned basmati rice, crispy chicken strips, coleslaw salad, crispy toasted bread.\n"
+    "  * Combo upgrade: +50 EGP for fries and a drink.\n"
+    "* **5-Piece Chicken Strips Meal — 205 EGP**\n"
+    "  * Includes: Five crispy chicken strips, French fries, fresh bun, garlic dip.\n"
+    "  * Combo upgrade: +50 EGP for fries and a drink.\n"
+    "* **Break Meal — 235 EGP**\n"
+    "  * Includes: Half broasted chicken, French fries, fresh bun, garlic dip, coleslaw salad, ketchup.\n"
+    "  * Combo upgrade: +50 EGP for fries and a drink.\n\n"
     "#### ➕ Add-ons\n\n"
-    "**Basmati Rice** — 35 EGP\n"
-    "**French Fries** — 30 EGP\n\n"
+    "* **Extra Chicken Strip** — 35 EGP\n"
+    "* **French Fries** — 35 EGP\n"
+    "* **Basmati Rice** — 25 EGP\n"
+    "* **Coleslaw** — 15 EGP\n"
+    "* **Large Garlic Dip** — 15 EGP\n"
+    "* **Kaiser Bun** — 5 EGP\n\n"
     "#### 🥫 Sauces\n\n"
-    "**Garlic Dip** — 15 EGP\n"
-    "**BBQ Sauce** — 15 EGP\n\n"
+    "* **Garlic Dip** — 15 EGP\n"
+    "* **BBQ Sauce** — 25 EGP\n"
+    "* **Ranch Sauce** — 15 EGP\n"
+    "* **Sweet Chili Sauce** — 15 EGP\n"
+    "* **Cheddar Cheese Sauce** — 35 EGP\n\n"
     "#### 🥤 Drinks\n\n"
-    "**Soft Drink** — 20 EGP\n"
-    "**Mineral Water** — 10 EGP\n\n"
+    "* **Soft Drink** — 25 EGP\n"
+    "* **Mineral Water** — 10 EGP\n\n"
+    "#### 🍟 Extras\n\n"
+    "* **Ribbon Fries** — 25 EGP\n\n"
     "### Example 2 — Guided Upselling\n"
     "User: \"I want 1 Break Meal.\"\n"
     "Assistant:\n"
@@ -202,23 +282,146 @@ def _strip_reasoning(text: str) -> str:
 
     return text.strip() or default
 
-def _reply_gemini(session_id: str, user_message: str, system_prompt: str, history: list, context: str = "") -> str:
-    """Generate a response using Google Gemini."""
-    global _quota_exhausted
-    from app.services.tools import query_price_info
+def _format_bedrock_messages(history: list, user_message: str) -> list:
+    """Format conversation history into valid alternating user/assistant messages for Bedrock Converse API."""
+    raw_msgs = []
+    for msg in history[-20:]:
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        role = "assistant" if msg.get("role") == "assistant" else "user"
+        raw_msgs.append({"role": role, "content": content})
 
-    # Only run price-query shortcut if message is not an explicit order command
-    order_action_verbs = ("order", "place an order", "i want to order", "اطلب", "عايز اطلب", "عاوز اطلب", "ضيف")
-    is_order_command = any(v in user_message.lower() for v in order_action_verbs)
-    has_order_context = "Current Order Draft" in system_prompt or "Next required information" in system_prompt
+    raw_msgs.append({"role": "user", "content": user_message})
 
-    if not is_order_command and not has_order_context:
-        result = query_price_info(user_message)
-        if result.get("ok"):
-            answer = result["text"]
-            history.append({"role": "user", "content": user_message})
-            history.append({"role": "assistant", "content": answer})
-            return answer
+    # Merge consecutive messages with identical roles and guarantee the sequence starts with "user"
+    merged = []
+    for m in raw_msgs:
+        if not merged:
+            if m["role"] == "assistant":
+                continue
+            merged.append({"role": "user", "content": [{"text": m["content"]}]})
+        elif merged[-1]["role"] == m["role"]:
+            merged[-1]["content"][0]["text"] += f"\n\n{m['content']}"
+        else:
+            merged.append({"role": m["role"], "content": [{"text": m["content"]}]})
+
+    if not merged:
+        merged.append({"role": "user", "content": [{"text": user_message}]})
+    return merged
+
+def _reply_bedrock(session_id: str, user_message: str, system_prompt: str, history: list) -> Optional[str]:
+    """Attempt to generate a response using Amazon Bedrock Runtime Converse API.
+    Returns the response text on success, or None if Bedrock is unavailable, throttled, or fails
+    so that the caller can transparently fall back to Google Gemini without breaking the conversation.
+    """
+    global _bedrock_cooldown_until, _bedrock_permanently_unavailable, _bedrock_auth_retry_after, _bedrock_last_skip_reason, _bedrock_client
+
+    bedrock_enabled = getattr(config, "BEDROCK_ENABLED", True)
+    provider_pref = getattr(config, "LLM_PROVIDER", "bedrock").lower()
+    if not bedrock_enabled or provider_pref == "gemini":
+        _bedrock_last_skip_reason = "configured_gemini"
+        return None
+
+    # Fast circuit-breaker check to avoid repeatedly calling a provider known to be unavailable or throttled
+    now = time.monotonic()
+    if _bedrock_permanently_unavailable:
+        if now < _bedrock_auth_retry_after:
+            remaining_s = _bedrock_auth_retry_after - now
+            _bedrock_last_skip_reason = "bedrock_auth_failure"
+            logger.info(
+                "provider=bedrock status=skipped reason=auth_error_cooldown remaining_cooldown_s=%.1f fallback=gemini",
+                remaining_s,
+            )
+            return None
+        else:
+            # Recovery: Auth error cooldown elapsed, allow Bedrock retry
+            _bedrock_permanently_unavailable = False
+            logger.info("provider=bedrock status=recovering reason=auth_cooldown_expired")
+
+    if now < _bedrock_cooldown_until:
+        remaining_s = _bedrock_cooldown_until - now
+        _bedrock_last_skip_reason = "bedrock_cooldown"
+        logger.info(
+            "provider=bedrock status=skipped reason=active_cooldown remaining_cooldown_s=%.1f fallback=gemini",
+            remaining_s,
+        )
+        return None
+
+    model_id = getattr(config, "BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0") or "amazon.nova-lite-v1:0"
+    token_limit = min(max(int(getattr(config, "AGENT_MAX_TOKENS", 1024) or 1024), 256), 2048)
+    temperature = float(getattr(config, "AGENT_TEMPERATURE", 0.3))
+    cooldown_sec = int(getattr(config, "BEDROCK_COOLDOWN_SECONDS", 60) or 60)
+
+    t_start = time.perf_counter()
+    try:
+        client = _bedrock_client if _bedrock_client is not None else get_bedrock_client()
+        bedrock_messages = _format_bedrock_messages(history, user_message)
+
+        resp = client.converse(
+            modelId=model_id,
+            system=[{"text": system_prompt}],
+            messages=bedrock_messages,
+            inferenceConfig={
+                "maxTokens": token_limit,
+                "temperature": temperature,
+            },
+        )
+        latency_ms = int((time.perf_counter() - t_start) * 1000)
+        output_msg = (resp or {}).get("output", {}).get("message", {})
+        content_blocks = output_msg.get("content") or []
+        texts = [blk.get("text", "") for blk in content_blocks if isinstance(blk, dict) and blk.get("text")]
+        response_text = "\n".join(texts).strip()
+        if response_text:
+            logger.info(
+                "provider=bedrock model=%s status=success latency_ms=%d",
+                model_id,
+                latency_ms,
+            )
+            return response_text
+
+        logger.warning(
+            "provider=bedrock status=error error_type=EmptyResponse fallback=gemini latency_ms=%d",
+            latency_ms,
+        )
+        _bedrock_last_skip_reason = "bedrock_fallback"
+        return None
+
+    except Exception as exc:
+        latency_ms = int((time.perf_counter() - t_start) * 1000)
+        err_name = type(exc).__name__
+        resp_dict = getattr(exc, "response", None) or {}
+        err_code = resp_dict.get("Error", {}).get("Code", err_name) if isinstance(resp_dict, dict) else err_name
+        err_str = str(exc).lower()
+
+        logger.warning(
+            "provider=bedrock status=error error_type=%s fallback=gemini latency_ms=%d",
+            err_code,
+            latency_ms,
+        )
+        _bedrock_last_skip_reason = "bedrock_fallback"
+
+        # Classify permanent vs transient errors so we don't repeatedly block future turns
+        permanent_codes = (
+            "AccessDeniedException",
+            "UnrecognizedClientException",
+            "InvalidSignatureException",
+            "NoCredentialsError",
+            "PartialCredentialsError",
+            "ResourceNotFoundException",
+        )
+        if err_code in permanent_codes or any(k in err_str for k in ("accessdenied", "not authorized", "no credentials", "invalid model identifier")):
+            _bedrock_permanently_unavailable = True
+            _bedrock_auth_retry_after = time.monotonic() + 300.0
+            logger.warning("[BEDROCK FALLBACK] Bedrock unavailable (%s); entering auth cooldown (300s) and switching to Gemini.", err_code)
+        else:
+            _bedrock_cooldown_until = time.monotonic() + cooldown_sec
+            logger.warning("[BEDROCK FALLBACK] Bedrock error/throttled (%s); entering %ds cooldown and switching to Gemini.", err_code, cooldown_sec)
+        return None
+
+def _reply_gemini(session_id: str, user_message: str, system_prompt: str, history: list, context: str = "", fallback_reason: str = "bedrock_fallback") -> str:
+    """Generate a response using Google Gemini (automatic fallback when Bedrock is unavailable)."""
+    global _quota_exhausted, _last_provider_used
 
     api_key = getattr(config, "GEMINI_API_KEY", "")
     model_name = getattr(config, "GEMINI_MODEL", "gemini-2.5-flash")
@@ -229,6 +432,11 @@ def _reply_gemini(session_id: str, user_message: str, system_prompt: str, histor
     injected_client = _gemini_client
 
     if not api_key and injected_client is None:
+        _last_provider_used = "deterministic_fallback"
+        logger.info(
+            "provider=deterministic_fallback status=success reason=%s missing_gemini_api_key=true",
+            fallback_reason,
+        )
         if context and context.strip():
             fallback_text = context.strip()
         else:
@@ -242,6 +450,11 @@ def _reply_gemini(session_id: str, user_message: str, system_prompt: str, histor
 
     # If quota was already exhausted in this session, return grounded context or graceful fallback immediately
     if _quota_exhausted and injected_client is None:
+        _last_provider_used = "deterministic_fallback"
+        logger.info(
+            "provider=deterministic_fallback status=success reason=%s quota_exhausted=true",
+            fallback_reason,
+        )
         if context and context.strip():
             fallback_text = context.strip()
         else:
@@ -289,6 +502,7 @@ def _reply_gemini(session_id: str, user_message: str, system_prompt: str, histor
     client = injected_client if injected_client is not None else get_gemini_client()
     response_text = ""
     last_error = None
+    t_start = time.perf_counter()
 
     try:
         response = client.models.generate_content(
@@ -296,15 +510,39 @@ def _reply_gemini(session_id: str, user_message: str, system_prompt: str, histor
             contents=contents,
             config=gen_config,
         )
+        latency_ms = int((time.perf_counter() - t_start) * 1000)
         response_text = response.text or ""
+        if response_text:
+            _last_provider_used = "gemini"
+            logger.info(
+                "provider=gemini model=%s status=success latency_ms=%d reason=%s",
+                model_name,
+                latency_ms,
+                fallback_reason,
+            )
     except Exception as exc:
+        latency_ms = int((time.perf_counter() - t_start) * 1000)
         last_error = exc
+        err_name = type(exc).__name__
+        resp_dict = getattr(exc, "response", None) or {}
+        err_code = resp_dict.get("Error", {}).get("Code", err_name) if isinstance(resp_dict, dict) else err_name
+        logger.warning(
+            "provider=gemini model=%s status=error error_type=%s latency_ms=%d fallback=deterministic",
+            model_name,
+            err_code,
+            latency_ms,
+        )
         err_str = str(exc).lower()
         if "quota" in err_str or "429" in err_str or "resource_exhausted" in err_str:
             _quota_exhausted = True
 
     # Handle unsuccessful requests gracefully without exposing raw API errors
     if not response_text:
+        _last_provider_used = "deterministic_fallback"
+        logger.info(
+            "provider=deterministic_fallback status=success reason=%s",
+            fallback_reason,
+        )
         err_str = str(last_error or "").lower()
         if "quota" in err_str or "429" in err_str or "resource_exhausted" in err_str:
             response_text = (
@@ -331,7 +569,38 @@ def _reply_gemini(session_id: str, user_message: str, system_prompt: str, histor
     return _strip_reasoning(response_text)
 
 def reply(session_id: str, user_message: str, context: str = "") -> str:
-    """Generate conversational response powered by Google Gemini generative capabilities."""
+    """Generate customer-facing conversational response with Amazon Bedrock as primary
+    and Google Gemini as automatic fallback.
+    """
+    global _last_provider_used, _gemini_client, _gemini_mock_injected, _bedrock_last_skip_reason
     history = get_history(session_id)
     system_prompt = get_system_prompt(context)
-    return _reply_gemini(session_id, user_message, system_prompt, history, context=context)
+
+    # Price inquiry fast-path before invoking external LLMs
+    from app.services.tools import query_price_info
+    order_action_verbs = ("order", "place an order", "i want to order", "اطلب", "عايز اطلب", "عاوز اطلب", "ضيف")
+    is_order_command = any(v in user_message.lower() for v in order_action_verbs)
+    has_order_context = "Current Order Draft" in system_prompt or "Next required information" in system_prompt
+    if not is_order_command and not has_order_context:
+        result = query_price_info(user_message)
+        if result.get("ok"):
+            answer = result["text"]
+            _last_provider_used = "deterministic_tool"
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": answer})
+            return answer
+
+    # 1. Primary Provider: Amazon Bedrock
+    # Run Bedrock unless a test explicitly injected a Gemini mock client without a Bedrock mock client
+    if not _gemini_mock_injected or _bedrock_client is not None:
+        bedrock_text = _reply_bedrock(session_id, user_message, system_prompt, history)
+        if bedrock_text:
+            _last_provider_used = "bedrock"
+            cleaned = _strip_reasoning(bedrock_text)
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": cleaned})
+            return cleaned
+
+    # 2. Automatic Fallback Provider: Google Gemini
+    fallback_reason = _bedrock_last_skip_reason or "bedrock_fallback"
+    return _reply_gemini(session_id, user_message, system_prompt, history, context=context, fallback_reason=fallback_reason)

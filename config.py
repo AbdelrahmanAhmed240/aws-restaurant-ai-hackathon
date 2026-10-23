@@ -25,7 +25,17 @@ class Config:
 
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    # Google Gemini Configuration (Sole Generative LLM Provider)
+    # LLM Provider Priority & Configuration (Bedrock Primary, Gemini Automatic Fallback)
+    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "bedrock").lower()
+
+    # Amazon Bedrock Configuration (Primary Response Provider)
+    BEDROCK_ENABLED = os.getenv("BEDROCK_ENABLED", "True").lower() in ("true", "1", "yes")
+    AWS_REGION = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "eu-north-1"))
+    BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0")
+    BEDROCK_TIMEOUT = int(os.getenv("BEDROCK_TIMEOUT", "10"))
+    BEDROCK_COOLDOWN_SECONDS = int(os.getenv("BEDROCK_COOLDOWN_SECONDS", "60"))
+
+    # Google Gemini Configuration (Automatic Fallback Generative LLM & Embeddings Provider)
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     GEMINI_EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")

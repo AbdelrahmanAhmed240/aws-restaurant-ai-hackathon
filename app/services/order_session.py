@@ -481,9 +481,23 @@ def parse_user_entities(session_id: str, message: str) -> dict[str, Any]:
             "3 strips": "3-Piece Chicken Strips Meal",
             "strips 3": "3-Piece Chicken Strips Meal",
             "3-piece strips": "3-Piece Chicken Strips Meal",
+            "3 piece strips": "3-Piece Chicken Strips Meal",
+            "3-piece chicken strips": "3-Piece Chicken Strips Meal",
+            "3 piece chicken strips": "3-Piece Chicken Strips Meal",
+            "3-piece chicken strips meal": "3-Piece Chicken Strips Meal",
+            "3 piece chicken strips meal": "3-Piece Chicken Strips Meal",
             "5 strips": "5-Piece Chicken Strips Meal",
             "strips 5": "5-Piece Chicken Strips Meal",
             "5-piece strips": "5-Piece Chicken Strips Meal",
+            "5 piece strips": "5-Piece Chicken Strips Meal",
+            "5-piece chicken strips": "5-Piece Chicken Strips Meal",
+            "5 piece chicken strips": "5-Piece Chicken Strips Meal",
+            "5-piece chicken strips meal": "5-Piece Chicken Strips Meal",
+            "5 piece chicken strips meal": "5-Piece Chicken Strips Meal",
+            "five piece chicken strips meal": "5-Piece Chicken Strips Meal",
+            "five piece chicken strips": "5-Piece Chicken Strips Meal",
+            "three piece chicken strips meal": "3-Piece Chicken Strips Meal",
+            "three piece chicken strips": "3-Piece Chicken Strips Meal",
             "strips": "3-Piece Chicken Strips Meal",
             "chicken strips": "3-Piece Chicken Strips Meal",
             "chicken meal": "Quarter Broasted Chicken",
@@ -585,16 +599,17 @@ def parse_user_entities(session_id: str, message: str) -> dict[str, Any]:
 
         for target_term, p in targets:
             term_lower = target_term.lower()
-            if re.search(r"^[a-z0-9\s]+$", term_lower):
-                m_term = re.search(rf"\b{re.escape(term_lower)}\b", text_lower)
-                if not m_term:
+            term_words = [w for w in re.split(r"[\s\-]+", term_lower) if w]
+            term_pattern = r"[\s\-]+".join(re.escape(w) for w in term_words)
+            m_term = re.search(rf"\b{term_pattern}(?:s)?\b", text_lower)
+            if not m_term:
+                if term_lower in text_lower:
+                    idx = text_lower.find(term_lower)
+                    span = (idx, idx + len(term_lower))
+                else:
                     continue
-                span = (m_term.start(), m_term.end())
             else:
-                if term_lower not in text_lower:
-                    continue
-                idx = text_lower.find(term_lower)
-                span = (idx, idx + len(term_lower))
+                span = (m_term.start(), m_term.end())
 
             # Discard if overlapping with any already matched span
             if any(max(s[0], span[0]) < min(s[1], span[1]) for s in matched_spans):
@@ -602,9 +617,9 @@ def parse_user_entities(session_id: str, message: str) -> dict[str, Any]:
             matched_spans.append(span)
 
             qty = 1
-            qty_match = re.search(rf"(?:(\d+)|(?:و\s*)?({num_words_pat}))\s*(?:x|from|of|قطع|قطعة|وجبات|وجبة)?\s*{re.escape(target_term)}", text, re.IGNORECASE)
+            qty_match = re.search(rf"(?:(\d+)|(?:و\s*)?({num_words_pat}))\s*(?:x|from|of|قطع|قطعة|وجبات|وجبة)?\s*{term_pattern}(?:s)?", text, re.IGNORECASE)
             if not qty_match:
-                qty_match = re.search(rf"{re.escape(target_term)}\s*(?:x|عدد)?\s*(?:(\d+)|(?:و\s*)?({num_words_pat}))", text, re.IGNORECASE)
+                qty_match = re.search(rf"{term_pattern}(?:s)?\s*(?:x|عدد)?\s*(?:(\d+)|(?:و\s*)?({num_words_pat}))", text, re.IGNORECASE)
             if qty_match:
                 digit_grp = qty_match.group(1)
                 word_grp = qty_match.group(2)

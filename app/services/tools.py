@@ -348,6 +348,30 @@ def _extract_budget_amount(text: str) -> Optional[float]:
     if not text:
         return None
     t = text.lower()
+
+    # Explicit order intent check: words indicating placing/wanting an order,
+    # but excluding information inquiries (e.g. "I want to know which meals cost less than 100 EGP")
+    order_signals = [
+        "can i order", "want to order", "i'd like to order", "i would like to order",
+        "give me", "bring me", "add to order", "add to cart", "deliver to me",
+        "أطلب", "اطلب", "هاتلي", "ابعتلي", "ضيف"
+    ]
+    # Check if there's an informational inquiry marker in the message
+    info_inquiry_markers = [
+        "know", "tell me", "which", "what", "show", "list", "display", "see",
+        "أعرف", "اعرف", "قولي", "قل لي", "إيه", "ايه", "أي", "اي", "وريني", "اعرض"
+    ]
+    has_info_inquiry = any(m in t for m in info_inquiry_markers)
+
+    if any(sig in t for sig in order_signals):
+        return None
+
+    # Check for "order", "i want", "i'd like", "عايز", "عاوز" only when NOT asking for information
+    if not has_info_inquiry:
+        general_order_words = ["order", "i want", "i'd like", "i'll take", "عايز", "عاوز", "أريد", "اريد", "ضيف"]
+        if any(w in t for w in general_order_words):
+            return None
+
     # Matches "under 100", "less than 50", "budget 150 egp", "تحت 100", "اقل من 50", "ميزانية 100"
     m = re.search(
         r"(?:under|less\s+than|below|up\s+to|budget|max|within|around|أقل\s+من|اقل\s+من|تحت|في\s+حدود|ميزانية|ميزانيه|بحد\s+أقصى|بحد\s+اقصى)\s*(\d{2,5})",
@@ -356,15 +380,16 @@ def _extract_budget_amount(text: str) -> Optional[float]:
     if m:
         return float(m.group(1))
 
-    # Matches "100 egp", "50 le", "150 pounds", "50 جنيه"
-    m2 = re.search(r"(\d{2,5})\s*(?:egp|le|l\.e|pounds|جنيه|جنية)\b", t)
-    if m2:
-        return float(m2.group(1))
-
     # Matches standalone "b 50" or "for 50"
     m3 = re.search(r"\b(?:for|ب)\s+(\d{2,5})\b", t)
     if m3:
         return float(m3.group(1))
+
+    # Matches "100 egp", "50 le", "150 pounds", "50 جنيه" only if not a price tag on a named item
+    if not re.search(r"[\-–—\(\)]\s*\d{2,5}\s*(?:egp|le)", t):
+        m2 = re.search(r"(?:options|meals?|anything|something|food|وجبات|خيارات|حاجة)?\s*(?:of|for|around)?\s*(\d{2,5})\s*(?:egp|le|l\.e|pounds|جنيه|جنية)\b", t)
+        if m2:
+            return float(m2.group(1))
 
     return None
 
@@ -476,19 +501,208 @@ def recommend_products(message: str, limit: int = 3) -> dict:
 def query_price_info(message: str) -> dict:
     """
     Answer menu pricing and budget inquiries with authoritative pricing data.
-    Enforces exact budget limits and combo price additions.
+    Enforces exact budget limits and combo price additions from the database.
+    Supports specific product price queries, ambiguous queries, and unlisted item handling.
     """
     try:
         text = (message or "").lower()
 
-        meals = Product.query.filter(
-            Product.is_available.is_(True),
-            Product.category == "Meals",
-        ).order_by(Product.price.asc()).all()
+        order_signals = [
+            "can i order", "want to order", "i'd like to order", "i would like to order",
+            "give me", "bring me", "add to order", "add to cart", "deliver to me",
+            "أطلب", "اطلب", "هاتلي", "ابعتلي", "ضيف"
+        ]
+        info_inquiry_markers = [
+            "know", "tell me", "which", "what", "show", "list", "display", "see", "how much", "cost", "price",
+            "أعرف", "اعرف", "قولي", "قل لي", "إيه", "ايه", "أي", "اي", "وريني", "اعرض", "بكام", "سعر", "تكلفة"
+        ]
+        has_info_inquiry = any(m in text for m in info_inquiry_markers)
 
-        if not meals:
-            return {"ok": False, "error": "No available meals found."}
+        if any(sig in text for sig in order_signals):
+            return {"ok": False, "error": "Order action detected, not a price query."}
 
+        if not has_info_inquiry:
+            general_order_words = ["order", "i want", "i'd like", "i'll take", "عايز", "عاوز", "أريد", "اريد", "ضيف"]
+            if any(w in text for w in general_order_words):
+                return {"ok": False, "error": "Order action detected, not a price query."}
+
+        # 1. Unlisted dish inquiry ("dish that isn't on the menu", "off menu")
+        unlisted_patterns = [
+            r"\b(?:dish|item|meal|food)\s+(?:that\s+)?(?:isn'?t|is\s+not|not)\s+(?:on|in)\s+(?:the\s+)?menu\b",
+            r"\b(?:not\s+on\s+(?:the\s+)?menu|off\s+menu)\b",
+            r"(?:مش\s+في\s+المنيو|مش\s+ع\s+المنيو|مش\s+موجود\s+في\s+المنيو)",
+        ]
+        if any(re.search(p, text) for p in unlisted_patterns):
+            return {
+                "ok": True,
+                "type": "unlisted_dish_query",
+                "text": "Could you please specify which dish you are asking about? I can check whether it is available on our menu and provide its authoritative price.",
+                "items": [],
+                "count": 0,
+            }
+
+        # 2. Specific product price lookup from authoritative SQLite database
+        all_products = Product.query.filter(Product.is_available.is_(True)).all()
+        if not all_products:
+            return {"ok": False, "error": "No available products found."}
+
+        alias_to_product_name = [
+            # Longer / more specific aliases first to prevent partial substring collision
+            ("5-piece chicken strips meal", "5-Piece Chicken Strips Meal"),
+            ("5-piece chicken strips", "5-Piece Chicken Strips Meal"),
+            ("5-piece strips", "5-Piece Chicken Strips Meal"),
+            ("5 strips", "5-Piece Chicken Strips Meal"),
+            ("five strips", "5-Piece Chicken Strips Meal"),
+            ("3-piece chicken strips meal", "3-Piece Chicken Strips Meal"),
+            ("3-piece chicken strips", "3-Piece Chicken Strips Meal"),
+            ("3-piece strips", "3-Piece Chicken Strips Meal"),
+            ("3 strips", "3-Piece Chicken Strips Meal"),
+            ("three strips", "3-Piece Chicken Strips Meal"),
+            ("quarter broasted chicken", "Quarter Broasted Chicken"),
+            ("quarter broasted", "Quarter Broasted Chicken"),
+            ("quarter chicken", "Quarter Broasted Chicken"),
+            ("broasted quarter", "Quarter Broasted Chicken"),
+            ("crispy chicken fatta", "Crispy Chicken Fatta"),
+            ("chicken fatta", "Crispy Chicken Fatta"),
+            ("fatta meal", "Crispy Chicken Fatta"),
+            ("fatta", "Crispy Chicken Fatta"),
+            ("basmatio rice meal", "Basmatio Rice Meal"),
+            ("basmatio rice", "Basmatio Rice Meal"),
+            ("basmatio meal", "Basmatio Rice Meal"),
+            ("basmatio", "Basmatio Rice Meal"),
+            ("rice with strips", "Basmatio Rice Meal"),
+            ("بسمتيو", "Basmatio Rice Meal"),
+            ("break meal", "Break Meal"),
+            ("half broasted chicken", "Break Meal"),
+            ("half chicken", "Break Meal"),
+            ("وجبة بريك", "Break Meal"),
+            ("extra chicken strip", "Extra Chicken Strip"),
+            ("extra strip", "Extra Chicken Strip"),
+            ("chicken strip", "Extra Chicken Strip"),
+            ("large garlic dip", "Large Garlic Dip"),
+            ("large garlic", "Large Garlic Dip"),
+            ("cheddar cheese sauce", "Cheddar Cheese Sauce"),
+            ("cheddar sauce", "Cheddar Cheese Sauce"),
+            ("sweet chili sauce", "Sweet Chili Sauce"),
+            ("sweet chili", "Sweet Chili Sauce"),
+            ("ranch sauce", "Ranch Sauce"),
+            ("ranch dip", "Ranch Sauce"),
+            ("bbq sauce", "BBQ Sauce"),
+            ("bbq", "BBQ Sauce"),
+            ("garlic dip", "Garlic Dip"),
+            ("garlic sauce", "Garlic Dip"),
+            ("toumaya", "Garlic Dip"),
+            ("french fries", "French Fries"),
+            ("fries", "French Fries"),
+            ("ribbon fries", "Ribbon Fries"),
+            ("basmati rice", "Basmati Rice"),
+            ("yellow rice", "Basmati Rice"),
+            ("kaiser bun", "Kaiser Bun"),
+            ("bun", "Kaiser Bun"),
+            ("coleslaw salad", "Coleslaw"),
+            ("coleslaw", "Coleslaw"),
+            ("soft drink", "Soft Drink"),
+            ("soft drinks", "Soft Drink"),
+            ("pepsi", "Soft Drink"),
+            ("soda", "Soft Drink"),
+            ("7up", "Soft Drink"),
+            ("mirinda", "Soft Drink"),
+            ("mineral water", "Mineral Water"),
+            ("water bottle", "Mineral Water"),
+            ("water", "Mineral Water"),
+        ]
+
+        matched_product = None
+        has_price_intent = any(k in text for k in (
+            "price", "prices", "cost", "how much", "how many", "سعر", "اسعار", "أسعار", "بكام", "تكلفة"
+        )) or "?" in text or "؟" in text
+
+        if has_price_intent:
+            for alias, target_name in alias_to_product_name:
+                pattern = rf"\b{re.escape(alias)}\b" if alias.isascii() else alias
+                if re.search(pattern, text):
+                    for p in all_products:
+                        if p.name.lower() == target_name.lower():
+                            matched_product = p
+                            break
+                    if matched_product:
+                        break
+
+        if matched_product is not None:
+            from app.services.decider import _format_meal_includes
+            if matched_product.category == "Meals":
+                includes_str = _format_meal_includes(matched_product.description or "")
+                lines = [
+                    f"### 🍗 {matched_product.name} Pricing\n",
+                    f"* **Price**: **{matched_product.price:.0f} EGP**",
+                    f"* **Optional Combo Upgrade**: +{matched_product.combo_price:.0f} EGP for French fries and a soft drink (Total: **{matched_product.price + matched_product.combo_price:.0f} EGP**).",
+                ]
+                if includes_str:
+                    lines.append(f"* **Includes**: {includes_str}.")
+            else:
+                lines = [
+                    f"### 🏷️ {matched_product.name} Pricing\n",
+                    f"* **Price**: **{matched_product.price:.0f} EGP**",
+                    f"* **Category**: {matched_product.category}",
+                ]
+                if matched_product.description:
+                    lines.append(f"* **Description**: {matched_product.description}")
+
+            return {
+                "ok": True,
+                "type": "product_price",
+                "text": "\n".join(lines),
+                "items": [matched_product.to_dict()],
+                "count": 1,
+            }
+
+        # 3. Ambiguous meal price inquiry ("How much is a meal?")
+        meals = [p for p in all_products if p.category == "Meals"]
+        meals.sort(key=lambda m: m.price)
+
+        is_ambiguous_meal_query = bool(re.search(
+            r"\b(?:how\s+much\s+(?:is|does\s+cost|costs?)\s+(?:a\s+|the\s+)?meal\??|price\s+of\s+(?:a\s+|the\s+)?meal\??|how\s+much\s+(?:are|is)\s+(?:the\s+)?meals\??)\b",
+            text
+        )) or text.strip(" ?.!؟") in ("how much is a meal", "price of a meal", "meal price", "meal prices", "what is the price of a meal", "بكام الوجبة", "سعر الوجبة", "اسعار الوجبات")
+
+        if is_ambiguous_meal_query:
+            cheapest = meals[0] if meals else None
+            expensive = meals[-1] if meals else None
+            min_p = cheapest.price if cheapest else 105
+            max_p = expensive.price if expensive else 235
+            lines = [
+                "### 🍗 Meal Prices\n",
+                f"Our meals range from **{min_p:.0f} EGP** to **{max_p:.0f} EGP** (with an optional combo upgrade for +50 EGP including French fries and a soft drink).\n",
+                "Which meal would you like to know more about?",
+            ]
+            for m in meals:
+                lines.append(f"* **{m.name}** — {m.price:.0f} EGP (Optional Combo: +{m.combo_price:.0f} EGP)")
+            return {
+                "ok": True,
+                "type": "ambiguous_meal_query",
+                "text": "\n".join(lines),
+                "items": [m.to_dict() for m in meals],
+                "count": len(meals),
+            }
+
+        # 4. Check for inquiry about a specific dish not on our menu (e.g. "What is the price of pizza?", "How much is the burger?")
+        m_unlisted = re.search(r"(?:price\s+of|how\s+much\s+(?:is|are))\s+(?:the\s+|a\s+)?([a-zA-Z\s]{3,30})\??", text)
+        if m_unlisted:
+            queried_dish = m_unlisted.group(1).strip()
+            ignored_terms = {"meal", "meals", "food", "dish", "dishes", "item", "items", "delivery", "order", "everything", "menu"}
+            if queried_dish not in ignored_terms and len(queried_dish) >= 3:
+                return {
+                    "ok": True,
+                    "type": "unlisted_product",
+                    "text": (
+                        f"I could not find **{queried_dish.title()}** on our menu. Break Restaurant specializes in broasted chicken, "
+                        "crispy chicken strips, fatta, and basmati meals. You can ask to view our full menu to see all available items."
+                    ),
+                    "items": [],
+                    "count": 0,
+                }
+
+        # 5. Budget and sorting inquiries (under budget, cheapest, most expensive, all prices)
         budget = _extract_budget_amount(text)
         results = []
         title = "Meal Prices"

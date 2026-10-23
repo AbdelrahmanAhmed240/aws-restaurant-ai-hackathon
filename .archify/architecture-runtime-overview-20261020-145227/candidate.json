@@ -3,7 +3,7 @@
   "diagram_type": "architecture",
   "meta": {
     "title": "Break Restaurant AI Agent — Runtime Architecture & Function Map",
-    "subtitle": "Interactive Function-Level Overview with Strands Decider 2B, RAG & SQLite",
+    "subtitle": "Dual Cloud LLM (Bedrock Primary + Gemini Fallback), Strands Decider 2B, RAG & SQLite",
     "output": ".archify/architecture-runtime-overview-20261020-145227/runtime-overview.html",
     "quality_profile": "showcase",
     "repository": {
@@ -27,9 +27,10 @@
           "llm_node",
           "chroma_db",
           "sqlite_db",
+          "bedrock_api",
           "gemini_api"
         ],
-        "note": "Complete runtime view from client ingress to database persistence and cloud Gemini API"
+        "note": "Complete runtime view from client ingress to SQLite/ChromaDB and Bedrock primary with Gemini fallback"
       },
       {
         "id": "order_journey",
@@ -54,9 +55,10 @@
           "rag_node",
           "chroma_db",
           "llm_node",
+          "bedrock_api",
           "gemini_api"
         ],
-        "note": "Information retrieval: ChromaDB semantic search with lexical fallback to Gemini response"
+        "note": "Information retrieval: ChromaDB semantic search with lexical fallback to Bedrock / Gemini synthesis"
       },
       {
         "id": "admin_operations",
@@ -77,9 +79,10 @@
           "rag_node",
           "order_engine",
           "llm_node",
+          "bedrock_api",
           "gemini_api"
         ],
-        "note": "Two-tier AI architecture: In-process PyTorch CPU SLM + Google Gemini 2.5 Flash"
+        "note": "Three-tier AI architecture: In-process PyTorch Decider 2B + Amazon Bedrock (Primary) + Google Gemini 2.5 (Fallback)"
       }
     ]
   },
@@ -90,8 +93,14 @@
       "label": "Restaurant Customer",
       "sublabel": "Browser / Web Chat UI",
       "icon": "person",
-      "pos": [40, 220],
-      "size": [120, 64]
+      "pos": [
+        40,
+        220
+      ],
+      "size": [
+        120,
+        64
+      ]
     },
     {
       "id": "admin_portal",
@@ -99,10 +108,21 @@
       "label": "Restaurant Operator",
       "sublabel": "Flask Dashboard UI",
       "icon": "person",
-      "pos": [40, 380],
-      "size": [120, 64],
+      "pos": [
+        40,
+        380
+      ],
+      "size": [
+        120,
+        64
+      ],
       "sources": [
-        { "path": "app/routes/admin.py", "line": 15, "end_line": 65, "label": "Admin dashboard routes" }
+        {
+          "path": "app/routes/admin.py",
+          "line": 15,
+          "end_line": 65,
+          "label": "Admin dashboard routes"
+        }
       ]
     },
     {
@@ -111,11 +131,27 @@
       "label": "Flask HTTP Gateway",
       "sublabel": "run.py & admin.py",
       "icon": "frontend",
-      "pos": [290, 220],
-      "size": [150, 64],
+      "pos": [
+        290,
+        220
+      ],
+      "size": [
+        150,
+        64
+      ],
       "sources": [
-        { "path": "run.py", "line": 5, "end_line": 9, "label": "Flask server boot" },
-        { "path": "app/routes/admin.py", "line": 461, "end_line": 510, "label": "Chat endpoint (agent_chat)" }
+        {
+          "path": "run.py",
+          "line": 5,
+          "end_line": 9,
+          "label": "Flask server boot"
+        },
+        {
+          "path": "app/routes/admin.py",
+          "line": 461,
+          "end_line": 510,
+          "label": "Chat endpoint (agent_chat)"
+        }
       ]
     },
     {
@@ -125,11 +161,27 @@
       "sublabel": "PyTorch CPU Singleton",
       "tag": "#tool-selection",
       "icon": "decision",
-      "pos": [510, 220],
-      "size": [160, 64],
+      "pos": [
+        510,
+        220
+      ],
+      "size": [
+        160,
+        64
+      ],
       "sources": [
-        { "path": "app/services/decider.py", "line": 50, "end_line": 96, "label": "get_decider_engine singleton" },
-        { "path": "app/services/decider.py", "line": 339, "end_line": 390, "label": "decide_route #tool-selection" }
+        {
+          "path": "app/services/decider.py",
+          "line": 50,
+          "end_line": 96,
+          "label": "get_decider_engine singleton"
+        },
+        {
+          "path": "app/services/decider.py",
+          "line": 339,
+          "end_line": 390,
+          "label": "decide_route #tool-selection"
+        }
       ]
     },
     {
@@ -138,10 +190,21 @@
       "label": "RAG Knowledge Node",
       "sublabel": "decider.py::rag_node",
       "icon": "backend",
-      "pos": [740, 60],
-      "size": [150, 64],
+      "pos": [
+        740,
+        60
+      ],
+      "size": [
+        150,
+        64
+      ],
       "sources": [
-        { "path": "app/services/decider.py", "line": 404, "end_line": 525, "label": "rag_node execution" }
+        {
+          "path": "app/services/decider.py",
+          "line": 404,
+          "end_line": 525,
+          "label": "rag_node execution"
+        }
       ]
     },
     {
@@ -151,11 +214,27 @@
       "sublabel": "decider.order_tool_node",
       "tag": "Draft State Machine",
       "icon": "backend",
-      "pos": [740, 220],
-      "size": [150, 64],
+      "pos": [
+        740,
+        220
+      ],
+      "size": [
+        150,
+        64
+      ],
       "sources": [
-        { "path": "app/services/decider.py", "line": 630, "end_line": 870, "label": "order_tool_node execution" },
-        { "path": "app/services/order_session.py", "line": 138, "end_line": 200, "label": "get_draft / clear_draft" }
+        {
+          "path": "app/services/decider.py",
+          "line": 630,
+          "end_line": 870,
+          "label": "order_tool_node execution"
+        },
+        {
+          "path": "app/services/order_session.py",
+          "line": 138,
+          "end_line": 200,
+          "label": "get_draft / clear_draft"
+        }
       ]
     },
     {
@@ -165,10 +244,21 @@
       "sublabel": "order_session.py",
       "tag": "Fuzzy Disambiguation",
       "icon": "security",
-      "pos": [740, 380],
-      "size": [150, 64],
+      "pos": [
+        740,
+        380
+      ],
+      "size": [
+        150,
+        64
+      ],
       "sources": [
-        { "path": "app/services/order_session.py", "line": 280, "end_line": 450, "label": "parse_user_entities" }
+        {
+          "path": "app/services/order_session.py",
+          "line": 280,
+          "end_line": 450,
+          "label": "parse_user_entities"
+        }
       ]
     },
     {
@@ -178,10 +268,21 @@
       "sublabel": "vector_store.py",
       "tag": "Lexical Fallback",
       "icon": "database",
-      "pos": [970, 60],
-      "size": [140, 64],
+      "pos": [
+        970,
+        60
+      ],
+      "size": [
+        140,
+        64
+      ],
       "sources": [
-        { "path": "app/services/vector_store.py", "line": 98, "end_line": 160, "label": "retrieve & fallback" }
+        {
+          "path": "app/services/vector_store.py",
+          "line": 98,
+          "end_line": 160,
+          "label": "retrieve & fallback"
+        }
       ]
     },
     {
@@ -190,11 +291,27 @@
       "label": "Generative Chat",
       "sublabel": "decider.py::llm_node",
       "icon": "backend",
-      "pos": [970, 220],
-      "size": [140, 64],
+      "pos": [
+        970,
+        220
+      ],
+      "size": [
+        140,
+        64
+      ],
       "sources": [
-        { "path": "app/services/decider.py", "line": 921, "end_line": 955, "label": "llm_node synthesis handler" },
-        { "path": "app/services/agent.py", "line": 205, "end_line": 280, "label": "agent.reply() generation" }
+        {
+          "path": "app/services/decider.py",
+          "line": 921,
+          "end_line": 955,
+          "label": "llm_node synthesis handler"
+        },
+        {
+          "path": "app/services/agent.py",
+          "line": 205,
+          "end_line": 280,
+          "label": "agent.reply() generation"
+        }
       ]
     },
     {
@@ -204,24 +321,87 @@
       "sublabel": "break_restaurant.db",
       "tag": "Source of Truth",
       "icon": "database",
-      "pos": [970, 380],
-      "size": [140, 64],
+      "pos": [
+        970,
+        380
+      ],
+      "size": [
+        140,
+        64
+      ],
       "sources": [
-        { "path": "app/models/order.py", "line": 4, "end_line": 54, "label": "Order & OrderItem models" },
-        { "path": "app/models/chat.py", "line": 4, "end_line": 35, "label": "ChatSession model" }
+        {
+          "path": "app/models/order.py",
+          "line": 4,
+          "end_line": 54,
+          "label": "Order & OrderItem models"
+        },
+        {
+          "path": "app/models/chat.py",
+          "line": 4,
+          "end_line": 35,
+          "label": "ChatSession model"
+        }
+      ]
+    },
+    {
+      "id": "bedrock_api",
+      "type": "cloud",
+      "label": "Amazon Bedrock",
+      "sublabel": "amazon.nova-lite-v1:0",
+      "tag": "Primary LLM · eu-north-1",
+      "icon": "cloud",
+      "pos": [
+        1210,
+        140
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/services/agent.py",
+          "line": 280,
+          "end_line": 348,
+          "label": "_reply_bedrock Converse API"
+        },
+        {
+          "path": "config.py",
+          "line": 22,
+          "end_line": 35,
+          "label": "BEDROCK_MODEL_ID & AWS_REGION"
+        }
       ]
     },
     {
       "id": "gemini_api",
       "type": "cloud",
       "label": "Google Gemini 2.5",
-      "sublabel": "External LLM API",
-      "tag": "HTTPS SDK",
+      "sublabel": "gemini-2.5-flash",
+      "tag": "Automatic Fallback",
       "icon": "cloud",
-      "pos": [1210, 220],
-      "size": [150, 64],
+      "pos": [
+        1210,
+        300
+      ],
+      "size": [
+        150,
+        64
+      ],
       "sources": [
-        { "path": "app/services/agent.py", "line": 15, "end_line": 35, "label": "Google GenAI SDK client" }
+        {
+          "path": "app/services/agent.py",
+          "line": 350,
+          "end_line": 466,
+          "label": "_reply_gemini fallback API"
+        },
+        {
+          "path": "config.py",
+          "line": 24,
+          "end_line": 25,
+          "label": "GEMINI_MODEL configuration"
+        }
       ]
     }
   ],
@@ -331,53 +511,67 @@
       "variant": "emphasis"
     },
     {
-      "id": "c11_gemini_call",
+      "id": "c11_bedrock_primary",
+      "from": "llm_node",
+      "to": "bedrock_api",
+      "label": "1. Bedrock primary",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c12_gemini_fallback",
       "from": "llm_node",
       "to": "gemini_api",
-      "label": "reply()",
-      "variant": "emphasis"
+      "label": "2. Gemini fallback",
+      "variant": "security"
+    },
+    {
+      "id": "c13_circuit_breaker",
+      "from": "bedrock_api",
+      "to": "gemini_api",
+      "label": "throttled (60s cooldown)",
+      "variant": "security"
     }
   ],
   "cards": [
     {
       "dot": "emerald",
-      "title": "Primary Customer Journey (Ordering)",
+      "title": "Primary Customer Journey (Ordering & Ingress)",
       "items": [
-        "1. Ingress: Customer sends HTTP POST to Flask /agent/chat endpoint.",
+        "1. Ingress: Customer sends HTTP POST to Flask /agent/chat or loads dedicated /chat UI.",
         "2. AI Routing: Strands Decider 2B evaluates input dynamically with #tool-selection.",
         "3. Domain Logic: order_tool_node extracts items, parses delivery/pickup, and handles upselling (+50 EGP combo).",
         "4. Entity Disambiguation: Fuzzy resolution prevents guessing between Smouha Branch 1 & 2.",
         "5. Database Commit: commit_confirmed_order inserts Customer, Order, and OrderItem rows in SQLite.",
-        "6. Verification: Authoritative ORD-XXXXXX receipt returned directly from SQLite with Gemini conversational synthesis."
+        "6. Verification: Authoritative ORD-XXXXXX receipt returned directly from SQLite; deterministic paths bypass external LLMs entirely."
       ]
     },
     {
       "dot": "violet",
-      "title": "Decoupled AI Architecture",
+      "title": "Multi-Provider AI Architecture (Bedrock Primary + Gemini Fallback)",
       "items": [
-        "Strands Decider 2B SLM: PyTorch CPU singleton classifying intent across 5 structured tools.",
-        "Google Gemini 2.5 Flash: Cloud LLM via official google-genai SDK for natural language responses.",
-        "Grounding Firewall: Gemini is strictly provided verified facts from SQLite and ChromaDB chunks.",
-        "Zero Hallucination: Order codes are never generated by the LLM."
+        "Strands Decider 2B SLM: In-process PyTorch CPU singleton classifying intent across 5 structured tools.",
+        "Amazon Bedrock (Primary): amazon.nova-lite-v1:0 in eu-north-1 via Converse API (retries=1, 10s fail-fast timeout).",
+        "Google Gemini 2.5 Flash (Fallback): Cloud LLM invoked automatically when Bedrock is unavailable, throttled, or times out.",
+        "Grounding Firewall: Both LLMs receive verified context from SQLite & ChromaDB; prompt-injection and hallucinated order numbers are strictly guarded."
       ]
     },
     {
       "dot": "amber",
-      "title": "Resilience & Fallback Architecture",
+      "title": "Resilience, Circuit-Breaker & Live Quota Handling",
       "items": [
-        "Decider Fallback: Deterministic regex/rule dispatcher takes over if SLM is disabled or errors.",
-        "RAG Fallback: Keyword search scans Markdown files if ChromaDB embeddings encounter rate limits.",
-        "Phone Validation: Regex enforces strict Egyptian mobile format (010, 011, 012, 015).",
-        "Order Idempotency: Duplicate confirmation submissions replay existing order receipt without duplicate rows."
+        "Bedrock Throttling Circuit-Breaker: When Bedrock returns ThrottlingException (e.g. daily token quota exhausted in eu-north-1), a 60-second cooldown is engaged.",
+        "Zero Extra Latency on Cooldown: Subsequent turns skip Bedrock instantly (0ms) and route directly to Gemini fallback.",
+        "Decider Fallback: Deterministic regex/rule dispatcher takes over if PyTorch Decider 2B is disabled or errors.",
+        "Order Idempotency: LLM provider fallback occurs strictly after tool execution; cart mutations and order commits never run twice."
       ]
     },
     {
       "dot": "cyan",
-      "title": "Data Isolation & Boundaries",
+      "title": "Data Isolation & Cloud Egress Boundaries",
       "items": [
-        "Untrusted Zone: Browser traffic enters exclusively through Flask routes (/agent/chat, /dashboard).",
-        "In-Process Zone: Python dispatcher, SQLite, and ChromaDB execute locally with zero network exposure.",
-        "Cloud Egress: Only Gemini generative synthesis communicates over HTTPS with API key credentials."
+        "Untrusted Zone: Browser traffic enters exclusively through Flask routes (/chat, /admin, /agent/chat).",
+        "In-Process Zone: Python dispatcher, SQLite, and ChromaDB execute locally with zero external network exposure.",
+        "Cloud Egress: Only generative synthesis communicates over HTTPS to AWS Bedrock (primary) and Google Gemini (fallback)."
       ]
     }
   ]
